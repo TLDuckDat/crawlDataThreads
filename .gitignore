@@ -1,0 +1,101 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Streamlit local runtime settings
+.streamlit/secrets.toml
+
+# Selenium Browser Profiles (Cookies, cache, credentials, session dumps)
+data/chrome_profile/
+data/edge_profile/
+data/active_browser.txt
+**/Crashpad/
+*.pma
+
+# SQLite Database & journals (Local data)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/threads_data.db
+
+# Exported Data Files (Excel, CSV)
+data/exports/
+exports/
+*.xlsx
+*.xls
+
+# Temporary / Scratch files
+scratch/
+scratch_test.py
+*.log
+*.tmp
+*.temp
+
+# Environment variables & secrets
+.env
+.env.local
+.env.*.local
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini

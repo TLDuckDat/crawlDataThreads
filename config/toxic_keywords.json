@@ -1,0 +1,163 @@
+{
+  "categories": {
+    "profanity": {
+      "name_vi": "Chửi thề / Tục tĩu",
+      "severity_multiplier": 1.0,
+      "words": [
+        "đm", "dm", "đmm", "dmm", "đcm", "dcm", "đcmm", "dcmm", "đkm", "dkm", "dkmm", "dkmll", "đkmll",
+        "vcl", "vkl", "vl", "vcc", "vcll", "vcđ", "vcd", "vclg", "clgt", "clgtn", "clgv", "cmn", "cmnl", "cmm", "cmmd",
+        "đéo", "đeo", "déo", "deo", "đech", "dech", "đếch", "đết", "ddel", "ddek", "ddeo",
+        "lồn", "lon", "lìn", "lin", "lồnnn", "lol", "lozz", "lul", "loll", "lolz", "ham lol", "ngáo lol", "xàm lol", "xam lon",
+        "cặc", "cac", "cak", "kẹc", "kec", "kac", "cặk", "cặck", "cc", "con cac", "như cc", "nhu cc",
+        "buồi", "buoi", "bùi", "bui", "dái", "dai", "con buoi", "thèm buồi", "them buoi",
+        "địt", "dit", "djt", "djt me", "đụ", "du", "duma", "dume", "đù má", "du ma", "đậu má", "dau ma", "đụ mẹ", "du me",
+        "địt mẹ", "dit me", "địt cụ", "dit cu", "ditme", "dume",
+        "đĩ", "di~", "đĩ điếm", "con đĩ", "con di", "con dy", "đĩ mẹ", "đĩ thõa", "di thoa", "đĩ đượi", "thằng đĩ",
+        "chó đẻ", "cho de", "chó rách", "cho rach", "cút", "cut", "biến mẹ đi", "mẹ mày", "cha mày", "bà già mày",
+        "bỏ mẹ", "ăn cức", "ăn cứt", "an cut", "an cuc", "cứt", "cut",
+        "như cặc", "như lồn", "như buồi", "nhu cac", "nhu lon", "nhu buoi"
+      ]
+    },
+    "insult": {
+      "name_vi": "Lăng mạ / Xúc phạm nhân phẩm",
+      "severity_multiplier": 1.2,
+      "words": [
+        "ngu", "ngu ngốc", "ngu si", "ngu học", "ngu lon", "ngu lồn", "ngu lol", "ngu vcl", "ngu xuẩn", "ngu như chó", "ngu như bò",
+        "óc chó", "oc cho", "0c cho", "óc lợn", "oc lon", "óc bò", "oc bo", "óc heo", "oc heo", "óc tôm", "oc tom",
+        "não tàn", "nao tan", "não phẳng", "nao phang", "não ngắn", "nao ngan", "não tôm", "thiểu năng", "thieu nang", "bại não", "bai nao",
+        "súc vật", "suc vat", "svat", "sucvat", "sv", "con vật", "súc sinh", "suc sinh", "chó chết", "cho chet", "đồ con chó", "thứ chó",
+        "đần độn", "dan don", "đần", "dan", "ngáo", "ngao", "ngáo đá", "ngao da", "ngáo ngơ", "khùng", "khung", "điên", "dien", "thần kinh", "than kinh",
+        "con hoang", "mất dạy", "mat day", "vô học", "vo hoc", "vô văn hóa", "vo van hoa",
+        "khốn nạn", "khon nan", "khốn khiếp", "rác rưởi", "rac ruoi", "thứ rác", "thu rac", "cặn bã", "can ba",
+        "phế vật", "phe vat", "bần nông", "ban nong", "đáy xã hội", "day xa hoi", "rẻ rách", "re rach",
+        "mạt hạng", "mat hang", "hèn hạ", "hen ha", "dốt nát", "dot nat", "đần thú", "mọi rợ", "moi ro", "mặt dày", "bố láo", "mất nết"
+      ]
+    },
+    "regional_discrimination": {
+      "name_vi": "Phân biệt vùng miền",
+      "severity_multiplier": 1.5,
+      "words": [
+        "bake", "parky", "bắc kỳ", "bac ky", "bắc kì", "bac ki", "bắc cụ", "bac cu", "bk", "bkc", "par ky", "parkee",
+        "namky", "nake", "nam kỳ", "nam ky", "nam kì", "nam ki", "nk", "nam cầy", "nam cay",
+        "cali", "calicon", "ba que", "baque", "3 que", "3que", "đu càng", "du cang",
+        "bò đỏ", "bo do", "bodo", "bò vàng", "bo vang", "bovang",
+        "thổ phỉ", "tho phi", "mọi miên", "moi mien", "trọ trẹ", "tro tre", "dân rau má", "dan rau ma", "hoa thanh quế",
+        "dân 36", "dan 36", "dân 37", "dan 37", "dân 38", "dan 38", "tỉnh lẻ", "nhà quê lên phố"
+      ]
+    },
+    "threat_violence": {
+      "name_vi": "Đe dọa bạo lực / Khủng bố",
+      "severity_multiplier": 1.4,
+      "words": [
+        "chém chết", "chem chet", "giết mày", "giet may", "đập chết", "dap chet",
+        "xiên chết", "xien chet", "xiên", "xien", "đâm chết", "dam chet", "bắn chết", "ban chet",
+        "xử đẹp", "xu dep", "đập bỏ mẹ", "dap bo me", "cho ăn đòn", "cho an don", "vỡ mồm", "vo mom",
+        "vỡ alo", "vo alo", "đập nát mặt", "dap nat mat", "đập nát gáo", "xé xác", "xe xac", "băm mày ra",
+        "tìm tận nhà", "tim tan nha", "xử mày", "xu may", "bẻ răng", "be rang", "cho mày biến mất", "chặt xác"
+      ]
+    },
+    "harassment_sexual": {
+      "name_vi": "Quấy rối / Thô tục 18+",
+      "severity_multiplier": 1.3,
+      "words": [
+        "bú cu", "bu cu", "buscu", "bú lol", "bu lon", "bú cặc", "bu cac",
+        "móc lốp", "moc lop", "thủ dâm", "thu dam", "quay tay", "quay chim",
+        "hiếp dâm", "hiep dam", "dâm đãng", "dam dang", "gạ tình", "ga tinh",
+        "gạ chịch", "ga chich", "chịch", "chich", "chịch dạo", "chich dao",
+        "phò", "pho", "phò phạch", "pho phach", "gái ngành", "gai nganh", "gái bán hoa", "bán dâm", "ban dam",
+        "cave", "ca ve", "đực rựa dâm", "liếm lồn", "liem lon", "liếm l*n"
+      ]
+    }
+  },
+  "emojis": {
+    "🖕": {
+      "label": "Ngón tay thối (Fuck you)",
+      "category": "profanity",
+      "weight": 0.6
+    },
+    "💩": {
+      "label": "Đống cứt (Lăng mạ bẩn thỉu)",
+      "category": "profanity",
+      "weight": 0.4
+    },
+    "🤡": {
+      "label": "Mặt hề (Chế giễu bôi nhọ)",
+      "category": "insult",
+      "weight": 0.4
+    },
+    "🐶": {
+      "label": "Icon chó (Lăng mạ súc vật)",
+      "category": "insult",
+      "weight": 0.4
+    },
+    "🐕": {
+      "label": "Icon chó (Lăng mạ súc vật)",
+      "category": "insult",
+      "weight": 0.4
+    },
+    "🐩": {
+      "label": "Icon chó (Lăng mạ)",
+      "category": "insult",
+      "weight": 0.4
+    },
+    "🐷": {
+      "label": "Icon lợn/heo (Body shaming/xúc phạm)",
+      "category": "insult",
+      "weight": 0.4
+    },
+    "🐖": {
+      "label": "Icon lợn (Xúc phạm)",
+      "category": "insult",
+      "weight": 0.4
+    },
+    "🐒": {
+      "label": "Icon khỉ (Phân biệt miệt thị)",
+      "category": "regional_discrimination",
+      "weight": 0.5
+    },
+    "🐵": {
+      "label": "Icon khỉ (Miệt thị)",
+      "category": "regional_discrimination",
+      "weight": 0.5
+    },
+    "🍆": {
+      "label": "Cà tím (Thô tục 18+)",
+      "category": "harassment_sexual",
+      "weight": 0.4
+    },
+    "🍑": {
+      "label": "Quả đào (Thô tục 18+)",
+      "category": "harassment_sexual",
+      "weight": 0.4
+    },
+    "🔪": {
+      "label": "Dao (Đe dọa bạo lực)",
+      "category": "threat_violence",
+      "weight": 0.6
+    },
+    "☠️": {
+      "label": "Đầu lâu (Đe dọa bạo lực)",
+      "category": "threat_violence",
+      "weight": 0.5
+    },
+    "⚰️": {
+      "label": "Quan tài (Dọa chết)",
+      "category": "threat_violence",
+      "weight": 0.6
+    }
+  },
+  "whitelist": [
+    "cám ơn", "cảm ơn", "bác kỳ", "đỗ nam trung", "nước cam", "con lợn rừng", "học tập", "công nghệ", "bình luận"
+  ],
+  "teencode_mappings": {
+    "vcl": ["vcl", "vkl", "vcc", "vcll", "vlon", "vloz", "vl", "vcđ", "vcd"],
+    "đm": ["đm", "dm", "đmm", "dmm", "đcm", "dcm", "đcmm", "dcmm", "dkm", "đkm", "duma", "dume"],
+    "clgt": ["clgt", "clgtn", "clgv", "cái lề gì thọt"],
+    "lồn": ["l*n", "l**", "l0n", "loz", "lon`", "l`on", "l.o.n", "lol", "lozz"],
+    "cặc": ["c*c", "c**", "c@c", "c4c", "cak", "kẹc", "kac", "cặk"],
+    "óc chó": ["0c cho", "oc' cho'", "oc cho", "occho", "0c ch0"],
+    "súc vật": ["suc vat", "sucvat", "sv", "svat"],
+    "bake": ["bk", "bắc kì", "bắc kỳ", "parky", "par ky", "parkee", "bkc"],
+    "namky": ["nk", "nam kì", "nam kỳ", "nake", "na ky", "nam cầy"]
+  }
+}
