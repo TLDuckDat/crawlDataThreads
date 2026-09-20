@@ -107,5 +107,67 @@ class TestAutoLearn(unittest.TestCase):
         self.assertIn("Xấu luôn", str(row["Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)"]))
         self.assertEqual(str(row["Từ lóng mới bổ sung (nếu có)"]), "từ lóng test")
 
+    def test_propagate_learned_keywords(self):
+        # Insert 2 unreviewed comments: one with the new slang, one clean
+        c1 = CommentModel(
+            id="cmt_future_1",
+            post_id="p1",
+            post_url="https://threads.net/p1",
+            content="Thằng này md quá trời ơi",
+            is_toxic=False,
+            toxic_score=0.0,
+            matched_words=[]
+        )
+        c2 = CommentModel(
+            id="cmt_clean_1",
+            post_id="p1",
+            post_url="https://threads.net/p1",
+            content="Chúc bạn một ngày vui vẻ và tốt lành",
+            is_toxic=False,
+            toxic_score=0.0,
+            matched_words=[]
+        )
+        self.db.upsert_comment(c1)
+        self.db.upsert_comment(c2)
+
+        # Teach engine the word 'md'
+        self.engine.learn_from_user_evaluation(
+            text="md",
+            user_review="bad",
+            new_keywords=["md"],
+            category="slang"
+        )
+
+        # Propagate
+        updated_count = self.db.propagate_learned_keywords(["md"], self.engine)
+        self.assertEqual(updated_count, 1)
+
+        # Check comment in database
+        with self.db.get_connection() as conn:
+            row = conn.execute("SELECT * FROM comments WHERE id = 'cmt_future_1'").fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["is_toxic"], 1)
+            self.assertIn("md", json.loads(row["matched_words"]))
+            self.assertGreaterEqual(row["toxic_score"], 0.4)
+
+    def test_search_and_get_learned_keywords(self):
+        self.engine.learn_from_user_evaluation(
+            text="con này ảo tưởng sức mạnh",
+            user_review="bad",
+            new_keywords=["ảo tưởng"],
+            category="slang"
+        )
+
+        # Search
+        results = self.engine.search_keywords("ảo tưởng")
+        self.assertTrue(len(results) >= 1)
+        self.assertEqual(results[0]["word"], "ảo tưởng")
+
+        # Get user learned
+        learned = self.engine.get_user_learned_keywords()
+        words = [item["keyword"] for item in learned]
+        self.assertIn("ảo tưởng", words)
+
 if __name__ == "__main__":
     unittest.main()
+

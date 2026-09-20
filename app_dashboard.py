@@ -503,9 +503,27 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
         )
 
         if item:
-            # Determine card border styling
-            is_sys_toxic = item.get("is_toxic", False) or item.get("review_status") == "bad" or item.get("toxic_score", 0) >= 0.5
-            is_sys_ambiguous = item.get("review_status") == "ambiguous" or (0.15 <= item.get("toxic_score", 0) < 0.5)
+            content_text = item.get("content", "")
+
+            # Dynamic Live Analysis: Always run latest toxic engine on unreviewed comment
+            # so any newly learned keyword/slang from previous reviews is IMMEDIATELY recognized!
+            live_analysis = toxic_engine.analyze(content_text)
+            
+            # Combine static database matches with live matches from newly learned dictionary
+            combined_matched_words = list(set(item.get("matched_words_list", []) + live_analysis.matched_words))
+            combined_matched_emojis = list(set(item.get("matched_emojis_list", []) + live_analysis.matched_emojis))
+
+            # Determine card border and system score styling
+            if item.get("is_user_reviewed"):
+                sys_score = round(item.get("toxic_score", 0.0), 2)
+                sys_severity = item.get("severity_vi", "Trong sạch")
+                is_sys_toxic = item.get("is_toxic", False) or item.get("review_status") == "bad" or sys_score >= 0.5
+                is_sys_ambiguous = item.get("review_status") == "ambiguous" or (0.15 <= sys_score < 0.5)
+            else:
+                sys_score = round(max(item.get("toxic_score", 0.0), live_analysis.score), 2)
+                sys_severity = live_analysis.severity_vi if live_analysis.is_toxic else item.get("severity_vi", "Trong sạch")
+                is_sys_toxic = live_analysis.is_toxic or item.get("is_toxic", False) or sys_score >= 0.5
+                is_sys_ambiguous = not is_sys_toxic and (live_analysis.review_status == "ambiguous" or (0.15 <= sys_score < 0.5))
 
             card_border_class = "focus-card-toxic" if is_sys_toxic else ("focus-card-ambiguous" if is_sys_ambiguous else "focus-card-clean")
 
@@ -520,14 +538,12 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
             likes_count = item.get("likes", 0)
             posted_time = item.get("posted_at") or ""
 
-            sys_score = round(item.get("toxic_score", 0.0), 2)
-            sys_severity = item.get("severity_vi", "Trong sạch")
-
             # System prediction badge HTML
+            detected_label = f" [Phát hiện: {', '.join(combined_matched_words[:3])}]" if combined_matched_words else ""
             if is_sys_toxic:
-                sys_badge_html = f"<span class='toxic-badge'>⚠️ Hệ thống chấm: VI PHẠM ({sys_score} - {sys_severity})</span>"
+                sys_badge_html = f"<span class='toxic-badge'>⚠️ Hệ thống chấm: VI PHẠM ({sys_score} - {sys_severity}){detected_label}</span>"
             elif is_sys_ambiguous:
-                sys_badge_html = f"<span style='background:#FEF3C7; color:#92400E; padding:4px 10px; border-radius:6px; font-weight:600; font-size:0.85rem;'>🟡 Hệ thống chấm: NGHI NGỜ ({sys_score})</span>"
+                sys_badge_html = f"<span style='background:#FEF3C7; color:#92400E; padding:4px 10px; border-radius:6px; font-weight:600; font-size:0.85rem;'>🟡 Hệ thống chấm: NGHI NGỜ ({sys_score}){detected_label}</span>"
             else:
                 sys_badge_html = f"<span class='clean-badge'>✅ Hệ thống chấm: Trong sạch ({sys_score})</span>"
 
@@ -542,10 +558,10 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
                 else:
                     user_badge_html = "<span style='background:#FEF3C7; color:#B45309; padding:4px 10px; border-radius:6px; font-weight:700; font-size:0.85rem; margin-left:8px;'>🏷️ Bạn đã gán: CHƯA RÕ</span>"
 
-            # Highlighted comment content
-            all_detected_kws = list(set(item.get("matched_words_list", []) + item.get("user_keywords_list", [])))
-            all_detected_emojis = item.get("matched_emojis_list", [])
-            comment_html = highlight_comment_text(item.get("content", ""), all_detected_kws + all_detected_emojis)
+            # Highlighted comment content (includes newly learned words immediately!)
+            all_detected_kws = list(set(combined_matched_words + item.get("user_keywords_list", [])))
+            all_detected_emojis = combined_matched_emojis
+            comment_html = highlight_comment_text(content_text, all_detected_kws + all_detected_emojis)
 
             # Accent color for top status bar
             accent_color = "#EF4444" if is_sys_toxic else ("#F59E0B" if is_sys_ambiguous else "#10B981")
@@ -595,13 +611,13 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
             # 5. Interactive Bad Word Picker (Chọn từ xấu trực tiếp)
             st.markdown("#### 🎯 Chọn từ xấu &amp; Từ lóng độc hại trong bình luận này:")
             candidate_tokens = extract_candidate_words(
-                item.get("content", ""),
-                item.get("matched_words_list", []),
-                item.get("matched_emojis_list", [])
+                content_text,
+                combined_matched_words,
+                combined_matched_emojis
             )
 
             # Pre-select any already marked or matched bad words
-            preselected_words = [t for t in (item.get("user_keywords_list") or item.get("matched_words_list") or []) if t in candidate_tokens]
+            preselected_words = [t for t in (item.get("user_keywords_list") or combined_matched_words or []) if t in candidate_tokens]
 
             col_picker1, col_picker2 = st.columns([3.2, 1.8])
 
@@ -651,23 +667,39 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
 
                     db_manager.update_user_review(comment_id=item["id"], user_review="bad", user_keywords=all_bad)
                     toxic_engine.learn_from_user_evaluation(
-                        text=item.get("content", ""),
+                        text=content_text,
                         user_review="bad",
                         new_keywords=all_bad,
+                        category="slang",
                         post_context=post_content,
                         topic=", ".join(post_categories)
                     )
-                    st.toast(f"🔴 Đã lưu nhãn: XẤU LUÔN ({len(all_bad)} từ xấu)!")
+
+                    # Auto-propagate newly learned bad words to all other unreviewed comments in SQLite!
+                    propagated_count = db_manager.propagate_learned_keywords(all_bad, toxic_engine)
+                    prop_msg = f" và tự động phát hiện cho {propagated_count} bình luận tương tự trong hàng đợi!" if propagated_count > 0 else "!"
+                    st.toast(f"🔴 Đã lưu nhãn: XẤU LUÔN! Đã học từ lóng{prop_msg}", icon="⚡")
                     advance_queue()
 
             with col_b2:
                 if st.button("🟡 CHƯA RÕ (Nghi ngờ / Cần theo dõi)", use_container_width=True, key=f"btn_amb_{item['id']}"):
                     all_amb = list(selected_pills or [])
+                    if quick_preset and quick_preset != "-- Chọn nhanh để thêm --":
+                        all_amb.append(quick_preset)
                     if custom_slang.strip():
                         all_amb.extend([w.strip() for w in custom_slang.split(",") if w.strip()])
                     all_amb = list(set(all_amb))
 
                     db_manager.update_user_review(comment_id=item["id"], user_review="ambiguous", user_keywords=all_amb)
+                    if all_amb:
+                        toxic_engine.learn_from_user_evaluation(
+                            text=content_text,
+                            user_review="ambiguous",
+                            new_keywords=all_amb,
+                            category="slang",
+                            post_context=post_content,
+                            topic=", ".join(post_categories)
+                        )
                     st.toast("🟡 Đã lưu nhãn: CHƯA RÕ (Nghi ngờ)!")
                     advance_queue()
 
@@ -675,7 +707,7 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
                 if st.button("🟢 TRONG SẠCH (Bình thường)", use_container_width=True, key=f"btn_clean_{item['id']}"):
                     db_manager.update_user_review(comment_id=item["id"], user_review="clean", user_keywords=[])
                     toxic_engine.learn_from_user_evaluation(
-                        text=item.get("content", ""),
+                        text=content_text,
                         user_review="clean",
                         post_context=post_content,
                         topic=", ".join(post_categories)
@@ -1239,39 +1271,132 @@ elif menu == "🔍 Kiểm tra văn bản & Icon":
 # TAB 6: DICTIONARY MANAGER
 elif menu == "📚 Từ điển Từ lóng & Icon":
     st.markdown('<div class="main-header">📚 Quản Lý Từ Điển Từ Lóng & Icon Nhạy Cảm</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Danh sách từ ngữ có dấu, không dấu, teencode và biểu tượng emoji quy định vi phạm</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Hệ thống từ điển đa tầng: Từ lóng bạn gán nhãn (Active Learning), từ khóa hệ thống và emoji vi phạm</div>', unsafe_allow_html=True)
 
-    dict_tab1, dict_tab2 = st.tabs(["📝 Danh mục từ ngữ & từ lóng", "🎭 Danh sách Icon / Emoji nhạy cảm"])
+    dict_tab0, dict_tab1, dict_tab2 = st.tabs([
+        "🔥 Từ lóng bạn gán nhãn (Active Learning)",
+        "🔍 Tra cứu & Quản lý tất cả danh mục",
+        "🎭 Biểu tượng Icon / Emoji nhạy cảm"
+    ])
 
+    cats = toxic_engine.categories_data
+
+    # SUB-TAB 0: USER LEARNED & ACTIVE LEARNING
+    with dict_tab0:
+        st.markdown("### 🧠 Danh sách từ lóng được thu thập từ quá trình gán nhãn")
+        st.markdown(
+            "Mỗi khi bạn bấm **🔴 XẤU LUÔN** hoặc **🟡 CHƯA RÕ** và chọn/xác nhận từ xấu trong phần Focus Review, "
+            "hệ thống sẽ tự động lưu từ lóng đó vào đây và lập tức áp dụng cho tất cả các bình luận tương tự về sau."
+        )
+
+        learned_list = toxic_engine.get_user_learned_keywords()
+
+        col_m1, col_m2, col_m3 = st.columns([1.5, 1.5, 2])
+        with col_m1:
+            st.metric("Tổng từ lóng đã học / gán nhãn", f"{len(learned_list)} từ")
+        with col_m2:
+            slang_count = len(cats.get("slang", {}).get("words", []))
+            st.metric("Từ lóng trong danh mục Slang", f"{slang_count} từ")
+        with col_m3:
+            st.write("")
+            if st.button("⚡ Quét & Cập nhật lại toàn bộ CSDL", type="primary", help="Áp dụng toàn bộ từ lóng mới nhất cho tất cả bình luận chưa duyệt trong database"):
+                with st.spinner("Đang quét và cập nhật lại toàn bộ bình luận..."):
+                    updated_c = db_manager.reanalyze_all_unreviewed_comments(toxic_engine)
+                    st.success(f"✅ Đã quét xong! Cập nhật {updated_c} bình luận vi phạm theo từ điển mới.")
+                    st.rerun()
+
+        if learned_list:
+            df_learned = pd.DataFrame(learned_list)
+            df_learned.columns = ["Từ lóng / Cụm từ", "Số lần gán nhãn", "Thời điểm ghi nhận", "Ngữ cảnh bình luận mẫu"]
+            st.dataframe(df_learned, use_container_width=True, height=350)
+
+            # Option to delete / unlearn a keyword
+            st.markdown("#### 🗑️ Xóa hoặc hủy học từ khóa nếu bấm nhầm")
+            c_del1, c_del2 = st.columns([3, 1])
+            with c_del1:
+                word_to_del = st.selectbox(
+                    "Chọn từ khóa muốn xóa khỏi từ điển học máy:",
+                    [item["keyword"] for item in learned_list]
+                )
+            with c_del2:
+                st.write("")
+                st.write("")
+                if st.button("Xóa từ này", type="secondary"):
+                    if toxic_engine.remove_keyword(word_to_del):
+                        toxic_engine.save_dictionary()
+                        st.success(f"Đã xóa '{word_to_del}' khỏi từ điển.")
+                        st.rerun()
+                    else:
+                        st.error("Không tìm thấy từ để xóa.")
+        else:
+            st.info("Chưa có từ lóng nào được học từ việc gán nhãn. Hãy sang mục Focus Review để bắt đầu gán nhãn!")
+
+    # SUB-TAB 1: ALL CATEGORIES & SEARCH
     with dict_tab1:
-        cats = toxic_engine.categories_data
+        st.markdown("### 🔍 Tra cứu nhanh từ khóa")
+        search_kw = st.text_input("Nhập từ khóa cần kiểm tra xem đã có trong từ điển chưa (ví dụ: md, cút, bake, hãm...):")
+        if search_kw.strip():
+            matches = toxic_engine.search_keywords(search_kw.strip())
+            if matches:
+                st.success(f"Tìm thấy **{len(matches)}** kết quả phù hợp với `{search_kw.strip()}`:")
+                df_matches = pd.DataFrame(matches)
+                df_matches.columns = ["Từ khóa", "Mã nhóm", "Tên danh mục vi phạm", "Hệ số nghiêm trọng"]
+                st.dataframe(df_matches, use_container_width=True)
+            else:
+                st.warning(f"Không tìm thấy từ khóa nào chứa `{search_kw.strip()}` trong từ điển hiện tại.")
+
+        st.markdown("---")
+        st.markdown("### 📂 Duyệt từ điển theo danh mục")
+
+        cat_keys = list(cats.keys())
+        # Default index to 'slang' if available
+        default_idx = cat_keys.index("slang") if "slang" in cat_keys else 0
         selected_cat = st.selectbox(
-            "Chọn nhóm từ khóa:",
-            list(cats.keys()),
-            format_func=lambda c: cats[c].get("name_vi", c)
+            "Chọn danh mục vi phạm:",
+            cat_keys,
+            index=default_idx,
+            format_func=lambda c: f"{cats[c].get('name_vi', c)} ({len(cats[c].get('words', []))} từ)"
         )
 
         words_in_cat = cats[selected_cat].get("words", [])
-        st.write(f"Hiện có **{len(words_in_cat)}** từ ngữ/từ lóng trong nhóm này (bao gồm cả dạng không dấu và viết tắt):")
-        st.text_area("Danh sách từ khóa:", value=", ".join(words_in_cat), height=180, disabled=True)
+        st.write(f"Hiện có **{len(words_in_cat)}** từ ngữ/từ lóng trong nhóm này (bao gồm cả dạng có dấu, không dấu và viết tắt):")
 
-        st.subheader("➕ Thêm từ khóa / từ lóng mới")
+        # Display as clean tag chips
+        if words_in_cat:
+            tags_html = " ".join([
+                f"<span style='display:inline-block; background:#1e293b; color:#38bdf8; border:1px solid #334155; padding:4px 10px; border-radius:8px; margin:3px; font-size:13px; font-family: monospace;'>{w}</span>"
+                for w in words_in_cat
+            ])
+            st.markdown(
+                f"<div style='max-height: 220px; overflow-y: auto; padding: 12px; background: #0f172a; border-radius: 8px; border: 1px solid #1e293b; margin-bottom: 15px;'>{tags_html}</div>",
+                unsafe_allow_html=True
+            )
+
+        with st.expander("📋 Xem danh sách dạng văn bản (để sao chép)"):
+            st.text_area("Toàn bộ từ khóa trong nhóm:", value=", ".join(words_in_cat), height=140, disabled=True)
+
+        st.markdown("#### ➕ Thêm từ khóa mới vào nhóm này")
         c_add1, c_add2 = st.columns([3, 1])
         with c_add1:
-            new_word = st.text_input("Nhập từ lóng mới (có thể nhập có dấu hoặc không dấu):")
+            new_word = st.text_input("Nhập từ lóng / từ khóa mới:", key="add_new_kw_input")
         with c_add2:
             st.write("")
             st.write("")
-            if st.button("Thêm vào từ điển"):
-                if new_word.strip():
-                    if toxic_engine.add_keyword(new_word.strip(), selected_cat):
+            if st.button("Thêm vào từ điển", key="btn_add_kw", type="primary"):
+                w_clean = new_word.strip()
+                if w_clean:
+                    if toxic_engine.add_keyword(w_clean, selected_cat):
                         toxic_engine.save_dictionary()
-                        st.success(f"Đã thêm thành công: '{new_word.strip()}' vào nhóm {selected_cat}")
+                        # Automatically propagate to database
+                        db_manager.propagate_learned_keywords([w_clean], toxic_engine)
+                        st.success(f"Đã thêm thành công: '{w_clean}' vào nhóm {selected_cat} và cập nhật CSDL!")
                         st.rerun()
                     else:
                         st.warning("Từ này đã tồn tại trong danh sách.")
 
+    # SUB-TAB 2: EMOJIS
     with dict_tab2:
+        st.markdown("### 🎭 Biểu tượng cảm xúc (Emoji / Icon) nhạy cảm")
         st.write("Các biểu tượng cảm xúc (Emoji/Icon) được dùng trong ngữ cảnh lăng mạ, xúc phạm danh dự, miệt thị vùng miền hoặc bạo lực mạng:")
         emojis_list = []
         for e_char, e_info in toxic_engine.emojis_data.items():
@@ -1281,4 +1406,4 @@ elif menu == "📚 Từ điển Từ lóng & Icon":
                 "Nhóm vi phạm": cats.get(e_info.get("category", ""), {}).get("name_vi", e_info.get("category", "")),
                 "Điểm trọng số": e_info.get("weight", 0.5)
             })
-        st.dataframe(pd.DataFrame(emojis_list), use_container_width=True)
+        st.dataframe(pd.DataFrame(emojis_list), use_container_width=True, height=400)

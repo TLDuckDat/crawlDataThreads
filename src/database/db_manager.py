@@ -579,6 +579,114 @@ class DatabaseManager:
             conn.commit()
             return True
 
+    def propagate_learned_keywords(self, new_keywords: List[str], engine: Any) -> int:
+        """
+        Active Learning Auto-Propagation:
+        When new toxic keywords/slang are learned from user review,
+        re-evaluate all unreviewed comments in the database that contain these keywords.
+        Updates is_toxic, toxic_score, severity_vi, review_status, review_status_vi, matched_words, categories.
+        Returns the number of comments updated.
+        """
+        if not new_keywords:
+            return 0
+
+        clean_keywords = [k.strip().lower() for k in new_keywords if k and len(k.strip()) >= 2]
+        if not clean_keywords:
+            return 0
+
+        updated_count = 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute("""
+                SELECT id, content FROM comments WHERE is_user_reviewed = 0 OR is_user_reviewed IS NULL
+            """).fetchall()
+
+            updates = []
+            for row in rows:
+                c_id, content = row["id"], row["content"]
+                if not content:
+                    continue
+                content_lower = content.lower()
+                if any(kw in content_lower for kw in clean_keywords):
+                    analysis = engine.analyze(content)
+                    if analysis.is_toxic:
+                        updates.append((
+                            1,
+                            analysis.score,
+                            analysis.severity_vi,
+                            analysis.review_status,
+                            analysis.review_status_vi,
+                            json.dumps(analysis.matched_words, ensure_ascii=False),
+                            json.dumps(analysis.category_names, ensure_ascii=False),
+                            c_id
+                        ))
+
+            if updates:
+                cursor.executemany("""
+                    UPDATE comments
+                    SET is_toxic = ?,
+                        toxic_score = ?,
+                        severity_vi = ?,
+                        review_status = ?,
+                        review_status_vi = ?,
+                        matched_words = ?,
+                        categories = ?
+                    WHERE id = ?
+                """, updates)
+                conn.commit()
+                updated_count = len(updates)
+                logger.info(f"Active Learning Propagated: Updated {updated_count} unreviewed comments matching keywords: {clean_keywords}")
+
+        return updated_count
+
+    def reanalyze_all_unreviewed_comments(self, engine: Any) -> int:
+        """
+        Re-scan ALL unreviewed comments with the latest dictionary and toxic engine.
+        Returns the number of toxic comments detected.
+        """
+        updated_count = 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute("""
+                SELECT id, content FROM comments WHERE is_user_reviewed = 0 OR is_user_reviewed IS NULL
+            """).fetchall()
+
+            updates = []
+            for row in rows:
+                c_id, content = row["id"], row["content"]
+                if not content:
+                    continue
+                analysis = engine.analyze(content)
+                updates.append((
+                    1 if analysis.is_toxic else 0,
+                    analysis.score,
+                    analysis.severity_vi,
+                    analysis.review_status,
+                    analysis.review_status_vi,
+                    json.dumps(analysis.matched_words, ensure_ascii=False),
+                    json.dumps(analysis.category_names, ensure_ascii=False),
+                    c_id
+                ))
+                if analysis.is_toxic:
+                    updated_count += 1
+
+            if updates:
+                cursor.executemany("""
+                    UPDATE comments
+                    SET is_toxic = ?,
+                        toxic_score = ?,
+                        severity_vi = ?,
+                        review_status = ?,
+                        review_status_vi = ?,
+                        matched_words = ?,
+                        categories = ?
+                    WHERE id = ?
+                """, updates)
+                conn.commit()
+                logger.info(f"Re-analyzed {len(updates)} unreviewed comments (Found {updated_count} toxic).")
+
+        return updated_count
+
     def get_review_progress(self) -> Dict[str, Any]:
         """Get overall manual evaluation progress and breakdown."""
         with self.get_connection() as conn:

@@ -18,6 +18,13 @@ from src.detector.categories import (
 from src.detector.text_normalizer import normalize_text, remove_vietnamese_accents, deobfuscate_leetspeak
 from src.utils.logger import logger
 
+STOPWORDS_SET = {
+    "con", "cái", "những", "các", "thứ", "đồ", "gì", "khác", "bố", "mẹ", "cha", "em", "anh", "chị", "tôi", "mình",
+    "bạn", "tao", "mày", "nó", "chúng", "ai", "đâu", "đây", "đó", "này", "kia", "nọ", "thì", "là", "mà", "và",
+    "hoặc", "nhưng", "bởi", "vì", "do", "nên", "nếu", "như", "rồi", "lại", "đã", "đang", "sẽ", "được", "bị", "phải",
+    "cho", "với", "về", "trong", "ngoài", "trên", "dưới", "có", "không", "chưa", "chẳng", "đ"
+}
+
 class ToxicDetectionEngine:
     """
     Engine to analyze Vietnamese text and detect offensive, toxic, slang, and abusive language,
@@ -42,6 +49,12 @@ class ToxicDetectionEngine:
             data = json.load(f)
 
         self.categories_data = data.get("categories", {})
+        if "slang" not in self.categories_data:
+            self.categories_data["slang"] = {
+                "name_vi": "Từ lóng / Teencode nhạy cảm",
+                "severity_multiplier": 1.1,
+                "words": []
+            }
         self.emojis_data = data.get("emojis", {})
         self.whitelist = set(w.lower().strip() for w in data.get("whitelist", []))
         self._compile_patterns()
@@ -65,7 +78,7 @@ class ToxicDetectionEngine:
                     pass
             self.compiled_patterns[cat] = patterns
 
-    def add_keyword(self, word: str, category: str = "profanity") -> bool:
+    def add_keyword(self, word: str, category: str = "slang") -> bool:
         """Dynamically add a new toxic keyword."""
         word = word.lower().strip()
         if not word:
@@ -73,7 +86,7 @@ class ToxicDetectionEngine:
         if category not in self.categories_data:
             self.categories_data[category] = {
                 "name_vi": CATEGORY_LABELS.get(category, category),
-                "severity_multiplier": 1.0,
+                "severity_multiplier": 1.1 if category == "slang" else 1.0,
                 "words": []
             }
         if word not in self.categories_data[category]["words"]:
@@ -94,6 +107,62 @@ class ToxicDetectionEngine:
             self._compile_patterns()
         return removed
 
+    def search_keywords(self, query: str) -> List[Dict[str, Any]]:
+        """Search for keywords across all categories."""
+        q = query.strip().lower()
+        if not q:
+            return []
+        results = []
+        for cat_key, cat_data in self.categories_data.items():
+            words = cat_data.get("words", [])
+            for w in words:
+                if q in w.lower():
+                    results.append({
+                        "word": w,
+                        "category": cat_key,
+                        "category_name": cat_data.get("name_vi", cat_key),
+                        "severity_multiplier": cat_data.get("severity_multiplier", 1.0)
+                    })
+        return results
+
+    def get_user_learned_keywords(self) -> List[Dict[str, Any]]:
+        """Extract all words learned from user reviews or marked as slang."""
+        learned = {}
+        if self.dataset_path.exists():
+            try:
+                with open(self.dataset_path, "r", encoding="utf-8") as f:
+                    dataset = json.load(f)
+                    if isinstance(dataset, list):
+                        for item in dataset:
+                            kws = item.get("learned_keywords") or item.get("new_keywords") or []
+                            for kw in kws:
+                                kw_clean = kw.strip().lower()
+                                if not kw_clean or (len(kw_clean) < 2 and kw_clean in STOPWORDS_SET):
+                                    continue
+                                if kw_clean not in learned:
+                                    learned[kw_clean] = {
+                                        "keyword": kw_clean,
+                                        "count": 0,
+                                        "first_seen": item.get("timestamp") or item.get("reviewed_at") or "",
+                                        "sample": item.get("content") or item.get("text") or ""
+                                    }
+                                learned[kw_clean]["count"] += 1
+            except Exception:
+                pass
+        
+        # Also include any words directly in the slang category
+        slang_words = self.categories_data.get("slang", {}).get("words", [])
+        for sw in slang_words:
+            sw_clean = sw.strip().lower()
+            if sw_clean and sw_clean not in learned:
+                learned[sw_clean] = {
+                    "keyword": sw_clean,
+                    "count": 1,
+                    "first_seen": "",
+                    "sample": "(Thêm trực tiếp vào danh mục Từ lóng)"
+                }
+        return sorted(list(learned.values()), key=lambda x: x["count"], reverse=True)
+
     def save_dictionary(self):
         """Save current keywords back to disk."""
         data = {
@@ -109,13 +178,13 @@ class ToxicDetectionEngine:
         text: str,
         user_review: str,
         new_keywords: Optional[List[str]] = None,
-        category: str = "profanity",
+        category: str = "slang",
         post_context: str = "",
         topic: str = ""
     ) -> Dict[str, Any]:
         """
         Integrate human-in-the-loop evaluations into knowledge base:
-        1. Add newly marked toxic keywords/slang into config/toxic_keywords.json.
+        1. Add newly marked toxic keywords/slang into config/toxic_keywords.json under 'slang' category.
         2. Append the verified sample into data/training_dataset.json for gradual automation.
         3. Recompile regex patterns immediately for instant learning.
         """
@@ -126,12 +195,17 @@ class ToxicDetectionEngine:
             if new_keywords:
                 for kw in new_keywords:
                     clean_kw = kw.strip().lower()
-                    if clean_kw and self.add_keyword(clean_kw, category=category):
-                        added_keywords.append(clean_kw)
+                    if not clean_kw:
+                        continue
+                    # Guard: Do not add common single stopwords like 'gì', 'khác', 'con'
+                    if " " not in clean_kw and clean_kw in STOPWORDS_SET:
+                        continue
+                    self.add_keyword(clean_kw, category=category)
+                    added_keywords.append(clean_kw)
 
             if added_keywords:
                 self.save_dictionary()
-                logger.info(f"Learned {len(added_keywords)} new toxic keywords from user evaluation: {added_keywords}")
+                logger.info(f"Learned {len(added_keywords)} toxic keywords from user evaluation: {added_keywords}")
 
         # Update training dataset JSON
         dataset = []

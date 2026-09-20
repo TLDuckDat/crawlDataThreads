@@ -8,6 +8,7 @@ class ToxicCategory(str, Enum):
     REGIONAL_DISCRIMINATION = "regional_discrimination" # Phân biệt vùng miền
     THREAT_VIOLENCE = "threat_violence"         # Đe dọa bạo lực
     HARASSMENT_SEXUAL = "harassment_sexual"     # Quấy rối, thô tục 18+
+    SLANG = "slang"                             # Từ lóng / Teencode nhạy cảm
 
 class ReviewStatus(str, Enum):
     BAD = "bad"                  # Xấu luôn (Độc hại rõ ràng)
@@ -29,6 +30,8 @@ CATEGORY_LABELS = {
     ToxicCategory.REGIONAL_DISCRIMINATION: "Phân biệt vùng miền",
     ToxicCategory.THREAT_VIOLENCE: "Đe dọa bạo lực",
     ToxicCategory.HARASSMENT_SEXUAL: "Quấy rối / Thô tục",
+    ToxicCategory.SLANG: "Từ lóng / Teencode nhạy cảm",
+    "slang": "Từ lóng / Teencode nhạy cảm"
 }
 
 SEVERITY_VI_LABELS = {
