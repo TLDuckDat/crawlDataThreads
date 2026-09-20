@@ -8,28 +8,39 @@ return (() => {
     const candidates = document.querySelectorAll('div[role="button"], span, button, a[role="button"]');
     for (const el of candidates) {
         // Do not click buttons inside login or modal dialogs
-        if (el.closest('div[role="dialog"], [aria-modal="true"]')) {
+        if (el.closest('div[role="dialog"], [aria-modal="true"], [data-dialog="true"]')) {
             continue;
         }
+        // Never click menu popups or left sidebar navigation items
+        if (el.getAttribute('aria-haspopup') === 'menu') {
+            continue;
+        }
+        const rect = el.getBoundingClientRect();
+        if (rect.left < 200 || rect.width === 0 || rect.height === 0) {
+            continue;
+        }
+
         const text = (el.innerText || "").trim().toLowerCase();
         const aria = (el.getAttribute('aria-label') || "").toLowerCase();
         
         const isExpand = (
             text === "xem thêm" || 
-            text === "more" || 
-            text === "view more" ||
+            text === "view more" || 
             text.includes("xem thêm câu trả lời") ||
             text.includes("xem câu trả lời") ||
             text.includes("câu trả lời khác") ||
             text.includes("xem thêm phản hồi") ||
             text.includes("xem phản hồi") ||
             text.includes("phản hồi khác") ||
+            text.includes("show replies") ||
+            text.includes("show reply") ||
             text.includes("view replies") ||
             text.includes("view reply") ||
             text.includes("view more replies") ||
             text.includes("more replies") ||
             /\\d+\\s*(câu trả lời|phản hồi|replies|reply)/i.test(text) ||
             aria.includes("view replies") ||
+            aria.includes("show replies") ||
             aria.includes("xem câu trả lời") ||
             aria.includes("xem phản hồi")
         );
@@ -47,27 +58,26 @@ return (() => {
 
 SCROLL_FEED_JS = """
 return (() => {
-    // 1. Scroll container in Threads is typically #scrollview
-    const scrollContainer = document.getElementById('scrollview') || 
-                           document.querySelector('div[id="scrollview"]') ||
-                           document.querySelector('div[style*="overflow-y"]') ||
-                           document.documentElement;
+    // Scroll container in Threads: check #scrollview or window
+    const scrollContainer = document.getElementById('scrollview') || document.documentElement;
 
-    // 2. Scroll the last rendered item into view to trigger Virtual DOM loading
-    const items = document.querySelectorAll('div[data-pressable-container="true"], div[role="article"]');
+    // Scroll visible cards in Threads
+    const items = Array.from(document.querySelectorAll('div[data-pressable-container="true"]')).filter(el => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && rect.left >= 200;
+    });
+
     if (items.length > 0) {
         items[items.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
 
-    // 3. Scroll container and window
     if (scrollContainer && scrollContainer !== document.documentElement) {
-        scrollContainer.scrollTop += 1400;
+        scrollContainer.scrollTop += 1000;
     }
-    window.scrollBy(0, 1400);
+    window.scrollBy(0, 1000);
 
     return {
-        itemsCount: items.length,
-        containerScrollTop: scrollContainer ? scrollContainer.scrollTop : 0
+        itemsCount: items.length
     };
 })();
 """
@@ -92,10 +102,19 @@ return (() => {
     const results = [];
     const seenTexts = new Set();
     
-    // Find all article or container cards in Threads feed/post page
-    const elements = document.querySelectorAll('div[data-pressable-container="true"], div[role="article"], div[tabindex="-1"]');
+    // Find all article or container cards in Threads feed/post page (excluding menu popups)
+    const elements = document.querySelectorAll('div[data-pressable-container="true"], div[role="article"]');
     
     elements.forEach((el, index) => {
+        // Skip hidden, collapsed, or left-sidebar elements
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0 || rect.left < 200 || el.offsetParent === null) {
+            return;
+        }
+        if (window.getComputedStyle(el).display === 'none' || window.getComputedStyle(el).visibility === 'hidden') {
+            return;
+        }
+
         // Skip anything inside a dialog/modal (such as the guest login wall)
         if (el.closest('div[role="dialog"], [aria-modal="true"], div[data-dialog="true"]')) {
             return;
@@ -134,16 +153,32 @@ return (() => {
         
         // Find Likes count
         let likes = 0;
-        const allText = el.innerText || "";
-        const likeMatch = allText.match(/(\\d+[\\d,.]*)\\s*(lượt thích|thích|likes?)/i);
-        if (likeMatch) {
-            const rawNum = likeMatch[1].replace(/[,.]/g, '');
-            likes = parseInt(rawNum, 10) || 0;
+        const buttons = el.querySelectorAll('div[role="button"], button');
+        for (const btn of buttons) {
+            if (btn.getAttribute('aria-haspopup') === 'menu') continue;
+            const btnText = (btn.innerText || "").trim();
+            const match = btnText.match(/^(\\d+(\\.\\d+)?[KMB]?)$/i);
+            if (match) {
+                let numStr = match[1].toUpperCase();
+                if (numStr.endsWith('K')) likes = Math.round(parseFloat(numStr) * 1000);
+                else if (numStr.endsWith('M')) likes = Math.round(parseFloat(numStr) * 1000000);
+                else likes = parseInt(numStr.replace(/[,.]/g, ''), 10) || 0;
+                break;
+            }
+        }
+        if (!likes) {
+            const allText = el.innerText || "";
+            const likeMatch = allText.match(/(\\d+[\\d,.]*)\\s*(lượt thích|thích|likes?)/i);
+            if (likeMatch) {
+                const rawNum = likeMatch[1].replace(/[,.]/g, '');
+                likes = parseInt(rawNum, 10) || 0;
+            }
         }
 
         // Detect if this is a child comment (Reply) and who it is replying to
         let isReply = false;
         let replyTo = "";
+        const allText = el.innerText || "";
 
         // Check 1: Explicit 'Đang trả lời @...' or 'Replying to @...'
         const replyMatch = allText.match(/(?:đang trả lời|replying to|trả lời)\\s*@?([A-Za-z0-9_.-]+)/i);
@@ -186,27 +221,52 @@ return (() => {
             src && !src.includes('profile') && !src.includes('avatar') && !src.includes('s150x150')
         );
         
-        // Find text content
-        const textSpans = el.querySelectorAll('span[dir="auto"], div[dir="auto"], span');
-        let extractedParts = [];
-        textSpans.forEach(s => {
-            const t = (s.innerText || "").trim();
-            if (t.length > 1 && 
-                !['Like', 'Reply', 'Repost', 'Share', 'Thread', 'Follow', 'Đang theo dõi', 'Theo dõi', 'Thích', 'Trả lời'].includes(t) &&
-                !t.match(/^\\d+[smhdwy]$/) && 
-                !t.match(/^\\d+(\\.\\d+)?[KMB]?$/) &&
-                !t.match(/^(?:đang trả lời|replying to)\\s*@?[A-Za-z0-9_.-]+$/i) &&
-                t !== username &&
-                t !== authorName) {
-                extractedParts.push(t);
-            }
-        });
-        
-        // Deduplicate overlapping texts from nested spans
-        const fullContent = [...new Set(extractedParts)].join(" ").trim();
-        const lowerContent = fullContent.toLowerCase();
+        // Find clean text content
+        const contentCandidates = el.querySelectorAll('div[dir="auto"], span[dir="auto"]');
+        let chosenContent = "";
+        let longestLen = 0;
 
-        // Filter out login wall strings or empty prompts
+        for (const cand of contentCandidates) {
+            let t = (cand.innerText || "").trim();
+            // Clean out 'Translate' or 'Dịch'
+            t = t.replace(/\\s*(Translate|Dịch)\\s*$/i, '').trim();
+            
+            // Skip badges, dates, user handles, numbers
+            if (t === username || t === authorName || t === 'Author' || t === 'Tác giả' || t === 'Pinned' || t === 'Ghim' || t === 'Edited' || t === 'Đã chỉnh sửa') continue;
+            if (/^\\d{1,2}\\/\\d{1,2}\\/\\d{2,4}$/.test(t)) continue;
+            if (/^\\d+[smhdwy]$/.test(t)) continue;
+            if (/^\\d+(\\.\\d+)?[KMB]?$/i.test(t)) continue;
+            if (/^(?:đang trả lời|replying to)\\s*@?[A-Za-z0-9_.-]+$/i.test(t)) continue;
+            if (['Like', 'Reply', 'Repost', 'Share', 'Thread', 'Follow', 'Đang theo dõi', 'Theo dõi', 'Thích', 'Trả lời'].includes(t)) continue;
+
+            if (t.length > longestLen) {
+                longestLen = t.length;
+                chosenContent = t;
+            }
+        }
+        
+        // Fallback to concatenating spans if no candidate found
+        if (!chosenContent) {
+            const textSpans = el.querySelectorAll('span[dir="auto"], div[dir="auto"], span');
+            let extractedParts = [];
+            textSpans.forEach(s => {
+                let t = (s.innerText || "").trim();
+                t = t.replace(/\\s*(Translate|Dịch)\\s*$/i, '').trim();
+                if (t.length > 1 && 
+                    !['Like', 'Reply', 'Repost', 'Share', 'Thread', 'Follow', 'Đang theo dõi', 'Theo dõi', 'Thích', 'Trả lời', 'Author', 'Pinned', 'Ghim', 'Edited'].includes(t) &&
+                    !t.match(/^\\d{1,2}\\/\\d{1,2}\\/\\d{2,4}$/) &&
+                    !t.match(/^\\d+[smhdwy]$/) && 
+                    !t.match(/^\\d+(\\.\\d+)?[KMB]?$/) &&
+                    !t.match(/^(?:đang trả lời|replying to)\\s*@?[A-Za-z0-9_.-]+$/i) &&
+                    t !== username &&
+                    t !== authorName) {
+                    extractedParts.push(t);
+                }
+            });
+            chosenContent = [...new Set(extractedParts)].join(" ").trim();
+        }
+
+        const lowerContent = chosenContent.toLowerCase();
         const isLoginWallText = (
             lowerContent.includes("say more with threads") ||
             lowerContent.includes("continue with instagram") ||
@@ -216,8 +276,8 @@ return (() => {
             lowerContent.includes("nói nhiều hơn với threads")
         );
         
-        if (fullContent && fullContent.length >= 2 && !isLoginWallText && !seenTexts.has(fullContent)) {
-            seenTexts.add(fullContent);
+        if (chosenContent && chosenContent.length >= 2 && !isLoginWallText && !seenTexts.has(chosenContent)) {
+            seenTexts.add(chosenContent);
             results.push({
                 index: index,
                 username: username,
@@ -229,7 +289,7 @@ return (() => {
                 isReply: isReply,
                 replyTo: replyTo,
                 imageUrls: imgs.slice(0, 3),
-                content: fullContent
+                content: chosenContent
             });
         }
     });

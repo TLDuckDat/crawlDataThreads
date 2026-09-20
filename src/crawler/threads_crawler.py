@@ -2,6 +2,8 @@ import time
 import uuid
 from typing import Optional, Callable, Dict, Any, List
 
+import re
+import requests
 from config.settings import DEFAULT_SCROLL_DELAY, DEFAULT_MAX_COMMENTS, DEFAULT_HEADLESS
 from src.crawler.browser import BrowserManager
 from src.crawler.parser import (
@@ -16,6 +18,27 @@ from src.detector.text_normalizer import is_valid_viet_eng_content, clean_to_vie
 from src.database.models import PostModel, CommentModel
 from src.database.db_manager import db_manager
 from src.utils.logger import logger
+
+def resolve_threads_url(url: str) -> str:
+    """
+    Resolve share links or redirects into canonical post URL.
+    E.g. https://www.threads.com/share/Bn6CGp__YG/ -> https://www.threads.com/@y.xuan301/post/DZY08gZk2g8
+    """
+    url = url.strip()
+    if "/share/" in url:
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            r = requests.get(url, headers=headers, allow_redirects=False, timeout=10)
+            loc = r.headers.get("Location")
+            if loc:
+                clean_url = loc.split("?")[0]
+                if clean_url.startswith("/"):
+                    clean_url = "https://www.threads.com" + clean_url
+                logger.info(f"Resolved share URL {url} -> {clean_url}")
+                return clean_url
+        except Exception as e:
+            logger.warning(f"Failed to resolve share URL via HTTP: {e}")
+    return url.split("?")[0]
 
 class ThreadsCrawler:
     """
@@ -39,8 +62,9 @@ class ThreadsCrawler:
         Auto-expands 'Xem thêm' and 'View more replies'.
         max_comments: None hoặc 0 nghĩa là KHÔNG GIỚI HẠN (cào đến khi hết bình luận).
         """
+        canonical_url = resolve_threads_url(post_url)
         session_id = f"post_{uuid.uuid4().hex[:8]}"
-        db_manager.create_session(session_id, post_url, "post")
+        db_manager.create_session(session_id, canonical_url, "post")
 
         is_unlimited = (max_comments is None or max_comments <= 0)
         driver = None
@@ -52,20 +76,39 @@ class ThreadsCrawler:
         seen_ids = set()
 
         try:
-            logger.info(f"Starting detailed crawl for post URL: {post_url} (Unlimited: {is_unlimited})")
+            logger.info(f"Starting detailed crawl for post URL: {canonical_url} (Original: {post_url}, Unlimited: {is_unlimited})")
             if progress_callback:
-                progress_callback(0, 0 if is_unlimited else max_comments, f"Khởi động trình duyệt cho: {post_url}...", None)
+                progress_callback(0, 0 if is_unlimited else max_comments, f"Khởi động trình duyệt cho: {canonical_url}...", None)
 
             driver = BrowserManager.get_driver(headless=self.headless)
-            driver.get(post_url)
-            time.sleep(4)
+            
+            # Start at Threads home
+            driver.get("https://www.threads.com/")
+            time.sleep(3)
+
+            # Navigate via SPA to post page to prevent redirect to feed
+            post_match = re.search(r'(/@[^/?#]+/post/[^/?#]+)', canonical_url)
+            if post_match:
+                post_path = post_match.group(1)
+                logger.info(f"Navigating to post thread via SPA: {post_path}")
+                driver.execute_script("""
+                    const path = arguments[0];
+                    const a = document.createElement('a');
+                    a.href = path;
+                    document.body.appendChild(a);
+                    a.click();
+                """, post_path)
+                time.sleep(4)
+            else:
+                driver.get(canonical_url)
+                time.sleep(4)
 
             current_scroll = 0
             max_scrolls = 100000 if is_unlimited else max(6, (max_comments or 50) // 4)
             no_new_data_count = 0
 
             main_post_saved = False
-            main_post_id = generate_item_id("post", post_url, "", "")
+            main_post_id = generate_item_id("post", canonical_url, "", "")
             current_parent_comment_id = ""
 
             while current_scroll < max_scrolls:
@@ -108,11 +151,11 @@ class ThreadsCrawler:
                         continue
 
                     # First item on page is typically the main post
-                    if not main_post_saved and (idx == 0 or post_url in (item_url or post_url)):
+                    if not main_post_saved:
                         analysis = toxic_engine.analyze(content)
                         post_model = PostModel(
                             id=main_post_id,
-                            url=post_url,
+                            url=canonical_url,
                             author_username=username,
                             author_name=author_name,
                             author_profile_url=author_profile_url,
@@ -167,7 +210,7 @@ class ThreadsCrawler:
                     comment_model = CommentModel(
                         id=comment_id,
                         post_id=main_post_id,
-                        post_url=post_url,
+                        post_url=canonical_url,
                         comment_url=item_url,
                         author_username=username,
                         author_name=author_name,
