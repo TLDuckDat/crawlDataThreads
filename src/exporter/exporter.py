@@ -47,7 +47,9 @@ class DataExporter:
         filename: Optional[str] = None,
         limit: Optional[int] = None,
         columns: Optional[List[str]] = None,
-        viet_eng_only: bool = True
+        viet_eng_only: bool = True,
+        min_length: Optional[int] = 2,
+        max_length: Optional[int] = 300
     ) -> Path:
         """
         Export comments focused CSV:
@@ -56,6 +58,7 @@ class DataExporter:
         - include_links: False (Chỉ bình luận & đánh giá), True (Kèm theo link bài viết/bình luận/profile/parent_id)
         - limit: None (Không giới hạn)
         - columns: Danh sách cột cần xuất (Nếu người dùng ẩn bớt cột trên giao diện)
+        - min_length / max_length: Lọc bỏ bình luận quá ngắn (< 2) và quá dài (> 300)
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         status_slug_map = {
@@ -80,12 +83,18 @@ class DataExporter:
             filter_comment_type=filter_comment_type,
             include_links=include_links,
             limit=limit,
-            viet_eng_only=viet_eng_only
+            viet_eng_only=viet_eng_only,
+            min_length=min_length,
+            max_length=max_length
         )
         if columns:
             valid_cols = [c for c in columns if c in df.columns]
             if valid_cols:
                 df = df[valid_cols]
+
+        for c in df.columns:
+            if df[c].dtype == object:
+                df[c] = df[c].apply(lambda s: " ".join(str(s).split()) if s is not None and not pd.isna(s) else "")
 
         df.to_csv(out_path, index=False, encoding="utf-8-sig")
         logger.info(f"Exported comments CSV successfully: {out_path} ({len(df)} rows)")
@@ -157,11 +166,14 @@ class DataExporter:
         filename: Optional[str] = None,
         limit: Optional[int] = None,
         columns: Optional[List[str]] = None,
-        viet_eng_only: bool = True
+        viet_eng_only: bool = True,
+        min_length: Optional[int] = 2,
+        max_length: Optional[int] = 300
     ) -> Path:
         """
         Export curated data with fixed widths and wrap text.
         If columns is specified, only include selected visible columns.
+        min_length / max_length: Filters out comments < 2 and > 300 characters.
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_name = filename or f"threads_danh_gia_4_cot_{filter_status}_{timestamp}.xlsx"
@@ -171,13 +183,19 @@ class DataExporter:
             filter_status=filter_status,
             filter_comment_type=filter_comment_type,
             limit=limit,
-            viet_eng_only=viet_eng_only
+            viet_eng_only=viet_eng_only,
+            min_length=min_length,
+            max_length=max_length
         )
 
         if columns:
             valid_cols = [c for c in columns if c in df.columns]
             if valid_cols:
                 df = df[valid_cols]
+
+        for c in df.columns:
+            if df[c].dtype == object:
+                df[c] = df[c].apply(lambda s: " ".join(str(s).split()) if s is not None and not pd.isna(s) else "")
 
         with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="Dữ liệu đánh giá", index=False)
@@ -193,11 +211,14 @@ class DataExporter:
         filename: Optional[str] = None,
         limit: Optional[int] = None,
         columns: Optional[List[str]] = None,
-        viet_eng_only: bool = True
+        viet_eng_only: bool = True,
+        min_length: Optional[int] = 2,
+        max_length: Optional[int] = 300
     ) -> Path:
         """
         Export curated data to UTF-8-BOM CSV for Excel compatibility.
         If columns is specified, only include selected visible columns.
+        min_length / max_length: Filters out comments < 2 and > 300 characters.
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_name = filename or f"threads_danh_gia_4_cot_{filter_status}_{timestamp}.csv"
@@ -207,13 +228,19 @@ class DataExporter:
             filter_status=filter_status,
             filter_comment_type=filter_comment_type,
             limit=limit,
-            viet_eng_only=viet_eng_only
+            viet_eng_only=viet_eng_only,
+            min_length=min_length,
+            max_length=max_length
         )
 
         if columns:
             valid_cols = [c for c in columns if c in df.columns]
             if valid_cols:
                 df = df[valid_cols]
+
+        for c in df.columns:
+            if df[c].dtype == object:
+                df[c] = df[c].apply(lambda s: " ".join(str(s).split()) if s is not None and not pd.isna(s) else "")
 
         df.to_csv(out_path, index=False, encoding="utf-8-sig")
         logger.info(f"Exported curated CSV file successfully: {out_path} ({len(df)} rows, {len(df.columns)} cols)")
@@ -247,12 +274,16 @@ class DataExporter:
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-        # Mapping of column configurations by header title
+        # Mapping of column configurations by header title: Bài viết -> f0 f1 f2 f3 -> Nội dung
         COLUMN_CONFIG = {
             "Mã ID": {"width": 16, "align": "center", "font_size": 9.5, "color": "64748B", "is_user": False},
+            "Bài viết": {"width": 48, "align": "left", "font_size": 10.5, "color": "000000", "is_user": False},
+            "f0": {"width": 42, "align": "left", "font_size": 10.5, "color": "000000", "is_user": False},
+            "f1": {"width": 42, "align": "left", "font_size": 10.5, "color": "000000", "is_user": False},
+            "f2": {"width": 42, "align": "left", "font_size": 10.5, "color": "000000", "is_user": False},
+            "f3": {"width": 42, "align": "left", "font_size": 10.5, "color": "000000", "is_user": False},
             "Nội dung": {"width": 48, "align": "left", "font_size": 10.5, "color": "000000", "is_user": False},
             "Điểm đánh giá": {"width": 22, "align": "center", "font_size": 10.5, "color": "000000", "is_user": False},
-            "Bài viết": {"width": 48, "align": "left", "font_size": 10.5, "color": "000000", "is_user": False},
             "Chủ đề bài viết": {"width": 24, "align": "center", "font_size": 10.5, "color": "000000", "is_user": False},
             "Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)": {"width": 30, "align": "center", "font_size": 10, "color": "854D0E", "is_user": True},
             "Từ lóng mới bổ sung (nếu có)": {"width": 28, "align": "center", "font_size": 10, "color": "854D0E", "is_user": True}
@@ -266,7 +297,7 @@ class DataExporter:
             # Match exact or partial
             matched_cfg = None
             for key, cfg in COLUMN_CONFIG.items():
-                if key.lower() in header_val.lower() or header_val.lower() in key.lower():
+                if key.lower() == header_val.lower() or key.lower() in header_val.lower() or header_val.lower() in key.lower():
                     matched_cfg = cfg
                     break
             if matched_cfg:
@@ -277,17 +308,19 @@ class DataExporter:
                 ws.column_dimensions[col_letter].width = 25
 
         # ─── Xác định các cột cần tính chiều cao tự động ───
-        # Cột "Nội dung" và "Bài viết" có thể rất dài → cần tự dãn chiều cao hàng
-        LONG_TEXT_COL_KEYWORDS = ["nội dung", "bài viết"]
+        # Cột "Bài viết", "f0", "f1", "f2", "f3", "Nội dung" có thể dài → cần tự dãn chiều cao hàng
+        LONG_TEXT_COL_KEYWORDS = ["bài viết", "f0", "f1", "f2", "f3", "nội dung"]
         long_text_col_indices = []
         for col_idx in range(1, ws.max_column + 1):
             header_val = str(ws.cell(row=1, column=col_idx).value or "").strip().lower()
             if any(kw in header_val for kw in LONG_TEXT_COL_KEYWORDS):
                 long_text_col_indices.append(col_idx)
 
-        # ─── Áp dụng style cho toàn bộ ô dữ liệu ───
+        # ─── Áp dụng style và chuẩn hóa khoảng trắng cho toàn bộ ô dữ liệu ───
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             for cell in row:
+                if cell.value is not None and isinstance(cell.value, str):
+                    cell.value = " ".join(cell.value.split())
                 cell.border = thin_border
                 cfg = col_settings.get(cell.column, {"align": "left", "font_size": 10.5, "color": "000000", "is_user": False})
                 cell.alignment = Alignment(horizontal=cfg["align"], vertical="top", wrap_text=True)

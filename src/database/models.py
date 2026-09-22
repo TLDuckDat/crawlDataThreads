@@ -43,6 +43,11 @@ class CommentModel:
     is_reply: bool = False
     parent_comment_id: Optional[str] = ""
     comment_type_vi: str = "Bình luận gốc"  # "Bình luận gốc" hoặc "Bình luận con (Phản hồi)"
+    f0: str = ""  # Bình luận gốc (nếu cmt cần xử lý là reply)
+    f1: str = ""  # Bình luận thế hệ F1 (reply cấp 1)
+    f2: str = ""  # Bình luận thế hệ F2 (reply cấp 2)
+    f3: str = ""  # Bình luận thế hệ F3 (reply cấp 3, nếu có)
+    reply_level: int = 0  # 0: Gốc, 1: F1, 2: F2, 3: F3...
     image_urls: List[str] = field(default_factory=list)
     is_toxic: bool = False
     toxic_score: float = 0.0

@@ -70,7 +70,12 @@ class DatabaseManager:
             "user_score": "REAL",
             "user_keywords": "TEXT DEFAULT '[]'",
             "is_user_reviewed": "INTEGER DEFAULT 0",
-            "user_reviewed_at": "TEXT DEFAULT ''"
+            "user_reviewed_at": "TEXT DEFAULT ''",
+            "f0": "TEXT DEFAULT ''",
+            "f1": "TEXT DEFAULT ''",
+            "f2": "TEXT DEFAULT ''",
+            "f3": "TEXT DEFAULT ''",
+            "reply_level": "INTEGER DEFAULT 0"
         }
         for col, col_type in comment_col_defs.items():
             if col not in existing_comment_cols:
@@ -150,6 +155,11 @@ class DatabaseManager:
                     is_reply INTEGER DEFAULT 0,
                     parent_comment_id TEXT DEFAULT '',
                     comment_type_vi TEXT DEFAULT 'Bình luận gốc',
+                    f0 TEXT DEFAULT '',
+                    f1 TEXT DEFAULT '',
+                    f2 TEXT DEFAULT '',
+                    f3 TEXT DEFAULT '',
+                    reply_level INTEGER DEFAULT 0,
                     image_urls TEXT,
                     is_toxic BOOLEAN DEFAULT 0,
                     toxic_score REAL DEFAULT 0.0,
@@ -233,10 +243,12 @@ class DatabaseManager:
                 INSERT INTO comments (
                     id, post_id, post_url, comment_url, author_username, author_name,
                     author_profile_url, content, posted_at, likes, reply_to,
-                    is_reply, parent_comment_id, comment_type_vi, image_urls,
+                    is_reply, parent_comment_id, comment_type_vi,
+                    f0, f1, f2, f3, reply_level,
+                    image_urls,
                     is_toxic, toxic_score, severity_vi, review_status, review_status_vi,
                     has_emoji_slang, matched_words, matched_emojis, categories, session_id, scraped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     content=excluded.content,
                     likes=excluded.likes,
@@ -244,6 +256,11 @@ class DatabaseManager:
                     is_reply=excluded.is_reply,
                     parent_comment_id=excluded.parent_comment_id,
                     comment_type_vi=excluded.comment_type_vi,
+                    f0=excluded.f0,
+                    f1=excluded.f1,
+                    f2=excluded.f2,
+                    f3=excluded.f3,
+                    reply_level=excluded.reply_level,
                     image_urls=excluded.image_urls,
                     is_toxic=excluded.is_toxic,
                     toxic_score=excluded.toxic_score,
@@ -263,6 +280,11 @@ class DatabaseManager:
                 1 if comment.is_reply else 0,
                 comment.parent_comment_id or "",
                 comment.comment_type_vi or ("Bình luận con (Phản hồi)" if comment.is_reply else "Bình luận gốc"),
+                comment.f0 or "",
+                comment.f1 or "",
+                comment.f2 or "",
+                comment.f3 or "",
+                comment.reply_level or 0,
                 json.dumps(comment.image_urls, ensure_ascii=False),
                 1 if comment.is_toxic else 0, comment.toxic_score, comment.severity_vi,
                 comment.review_status, comment.review_status_vi,
@@ -375,26 +397,30 @@ class DatabaseManager:
 
     def get_comments_export_df(
         self,
-        filter_status: Optional[str] = None,       # "all", "bad", "ambiguous", "clean", or "toxic_only"
-        filter_comment_type: Optional[str] = None, # "all", "root" (Bình luận gốc), "reply" (Bình luận con)
-        include_links: bool = False,                # Mặc định False để tập trung vào bình luận
-        limit: Optional[int] = None,               # None = Không giới hạn số lượng
-        viet_eng_only: bool = True                  # Bỏ qua bình luận tiếng Trung, Nhật, Hàn...
+        filter_status: str = "all",
+        filter_comment_type: str = "all",
+        include_links: bool = False,
+        limit: Optional[int] = None,
+        viet_eng_only: bool = True,
+        min_length: Optional[int] = 2,
+        max_length: Optional[int] = 300
     ) -> pd.DataFrame:
         """
-        Specialized exporter for Comments:
-        - Automatically groups/filters into:
-            * 'bad': Dữ liệu đánh giá là Xấu luôn (Rõ ràng)
-            * 'ambiguous': Dữ liệu Chưa rõ (Nghi ngờ / Cần duyệt lại)
-            * 'all': Toàn bộ bình luận để người dùng tự tổng hợp
+        Query comments specifically for focused export:
+        - filter_status:
+            * 'bad': Chỉ lấy các bình luận xấu luôn (toxic_score >= 0.5)
+            * 'ambiguous': Bình luận nghi ngờ (0.15 <= toxic_score < 0.5)
+            * 'clean': Bình luận trong sạch (toxic_score < 0.15)
+            * 'all' hoặc None: Toàn bộ bình luận để người dùng tự tổng hợp
         - filter_comment_type:
-            * 'root': Chỉ bình luận gốc
-            * 'reply': Chỉ bình luận con (phản hồi)
+            * 'root': Chỉ lấy bình luận gốc
+            * 'reply': Chỉ lấy bình luận con (phản hồi)
             * 'all' hoặc None: Cả bình luận gốc và bình luận con
         - Default includes ONLY comment text and classification (no link clutter)
         - If include_links=True, adds Post URL, Comment URL, Profile URL, IDs, Parent Comment ID.
         - limit: None hoặc 0 để lấy toàn bộ dữ liệu không giới hạn.
         - viet_eng_only: Lọc bỏ tiếng Trung, Nhật, Hàn... và làm sạch ký tự.
+        - min_length / max_length: Lọc bỏ bình luận quá ngắn (< 2) và quá dài (> 300).
         """
         with self.get_connection() as conn:
             query = "SELECT * FROM comments WHERE 1=1"
@@ -424,6 +450,20 @@ class DatabaseManager:
             if viet_eng_only:
                 df = df[df["content"].apply(is_valid_viet_eng_content)].copy()
                 df["content"] = df["content"].apply(clean_to_viet_eng)
+                if df.empty:
+                    return df
+
+            # Filter by comment length (default: 2 to 300 characters, ignoring < 2 like 'ừ', 'ờ' and > 300)
+            if min_length is not None or max_length is not None:
+                def length_filter(val):
+                    cleaned = " ".join(str(val or "").split())
+                    val_len = len(cleaned)
+                    if min_length is not None and val_len < min_length:
+                        return False
+                    if max_length is not None and val_len > max_length:
+                        return False
+                    return True
+                df = df[df["content"].apply(length_filter)].copy()
                 if df.empty:
                     return df
 
@@ -467,12 +507,16 @@ class DatabaseManager:
 
             df["comment_type_vi"] = df.apply(resolve_comment_type, axis=1)
 
-            # Clean focused comment columns
+            # Clean focused comment columns - f0 f1 f2 f3 placed before content
             core_columns = [
                 ("author_username", "Tài khoản tác giả (@Username)"),
                 ("author_name", "Tên hiển thị (Display Name)"),
                 ("comment_type_vi", "Loại bình luận (Gốc / Bình luận con)"),
                 ("reply_to", "Phản hồi cho (@Reply To)"),
+                ("f0", "f0"),
+                ("f1", "f1"),
+                ("f2", "f2"),
+                ("f3", "f3"),
                 ("content", "Nội dung bình luận (Comment Text)"),
                 ("review_status_vi", "Đánh giá phân loại (Review Status)"),
                 ("toxic_score", "Điểm độc hại (Toxic Score)"),
@@ -503,6 +547,11 @@ class DatabaseManager:
             rename_dict = {c[0]: c[1] for c in chosen_columns}
 
             out_df = df[col_keys].rename(columns=rename_dict)
+            # Collapse whitespace across all text columns
+            for c in out_df.columns:
+                if out_df[c].dtype == object:
+                    out_df[c] = out_df[c].apply(lambda s: " ".join(str(s).split()) if s is not None and not pd.isna(s) else "")
+
             return out_df
 
     def get_top_toxic_words(self, limit: int = 15) -> List[Dict[str, Any]]:
@@ -759,6 +808,7 @@ class DatabaseManager:
                 SELECT 
                     c.id, c.content, c.author_username, c.author_name, c.author_profile_url,
                     c.posted_at, c.likes, c.reply_to, c.is_reply, c.comment_type_vi,
+                    c.f0, c.f1, c.f2, c.f3, c.reply_level,
                     c.comment_url, c.post_url, c.post_id,
                     c.is_toxic, c.toxic_score, c.severity_vi, c.review_status, c.review_status_vi,
                     c.has_emoji_slang, c.matched_words, c.matched_emojis, c.categories,
@@ -829,22 +879,36 @@ class DatabaseManager:
         filter_status: str = "all",
         filter_comment_type: str = "all",
         limit: Optional[int] = None,
-        viet_eng_only: bool = True
+        viet_eng_only: bool = True,
+        min_length: Optional[int] = 2,
+        max_length: Optional[int] = 300
     ) -> pd.DataFrame:
         """
-        Query comments joined with posts, returning the 4 core requested columns:
-        1. Nội dung (Comment text)
-        2. Điểm đánh giá (Score & Level)
-        3. Bài viết (Original Post text / Context)
-        4. Chủ đề bài viết (Post category / topics)
-        + 1 auxiliary column for manual self-annotation.
+        Query comments joined with posts, returning the structured requested columns:
+        1. Mã ID
+        2. Bài viết (Original Post text / Context)
+        3. f0 (Bình luận gốc nếu cmt đang xét là reply)
+        4. f1 (Reply F1)
+        5. f2 (Reply F2)
+        6. f3 (Reply F3)
+        7. Nội dung (Nội dung bình luận đang xét)
+        8. Điểm đánh giá (Score & Level)
+        9. Chủ đề bài viết (Post category / topics)
+        + Tự đánh giá và Từ lóng mới.
         - viet_eng_only: Lọc bỏ các bình luận tiếng Trung, Nhật, Hàn... và làm sạch ký tự.
+        - min_length / max_length: Lọc bỏ các bình luận quá ngắn (< 2 như ừ, ờ) hoặc quá dài (> 300).
         """
         with self.get_connection() as conn:
             query = """
                 SELECT 
                     c.id as comment_id,
                     c.content as comment_content,
+                    c.f0,
+                    c.f1,
+                    c.f2,
+                    c.f3,
+                    c.reply_level,
+                    c.is_reply,
                     c.toxic_score,
                     c.severity_vi,
                     c.review_status,
@@ -881,30 +945,42 @@ class DatabaseManager:
                 query += " ORDER BY c.scraped_at DESC"
 
             df = pd.read_sql_query(query, conn, params=params)
+            curated_empty_cols = [
+                "Mã ID",
+                "Bài viết",
+                "f0",
+                "f1",
+                "f2",
+                "f3",
+                "Nội dung",
+                "Điểm đánh giá",
+                "Chủ đề bài viết",
+                "Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)",
+                "Từ lóng mới bổ sung (nếu có)"
+            ]
+
             if df.empty:
-                return pd.DataFrame(columns=[
-                    "Mã ID",
-                    "Nội dung",
-                    "Điểm đánh giá",
-                    "Bài viết",
-                    "Chủ đề bài viết",
-                    "Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)",
-                    "Từ lóng mới bổ sung (nếu có)"
-                ])
+                return pd.DataFrame(columns=curated_empty_cols)
 
             # Filter out Chinese, Japanese, Korean, and other foreign language content
             if viet_eng_only:
                 df = df[df["comment_content"].apply(is_valid_viet_eng_content)].copy()
                 if df.empty:
-                    return pd.DataFrame(columns=[
-                        "Mã ID",
-                        "Nội dung",
-                        "Điểm đánh giá",
-                        "Bài viết",
-                        "Chủ đề bài viết",
-                        "Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)",
-                        "Từ lóng mới bổ sung (nếu có)"
-                    ])
+                    return pd.DataFrame(columns=curated_empty_cols)
+
+            # Filter by comment length (default: 2 to 300 characters, ignoring < 2 like 'ừ', 'ờ' and > 300)
+            if min_length is not None or max_length is not None:
+                def length_filter(val):
+                    cleaned = " ".join(str(val or "").split())
+                    val_len = len(cleaned)
+                    if min_length is not None and val_len < min_length:
+                        return False
+                    if max_length is not None and val_len > max_length:
+                        return False
+                    return True
+                df = df[df["comment_content"].apply(length_filter)].copy()
+                if df.empty:
+                    return pd.DataFrame(columns=curated_empty_cols)
 
             # Helper for formatting topics / categories
             def format_categories(row):
@@ -961,16 +1037,169 @@ class DatabaseManager:
                         return str(kws)
                 return ""
 
+            def clean_field(val):
+                if not val or pd.isna(val):
+                    return ""
+                val_str = str(val).strip()
+                cleaned = clean_to_viet_eng(val_str) if viet_eng_only else val_str
+                return " ".join(cleaned.split())
+
             out_df = pd.DataFrame()
             out_df["Mã ID"] = df["comment_id"]
-            out_df["Nội dung"] = df["comment_content"].apply(clean_to_viet_eng) if viet_eng_only else df["comment_content"]
-            out_df["Điểm đánh giá"] = df.apply(format_score_display, axis=1)
-            out_df["Bài viết"] = df.apply(format_post_content, axis=1)
-            out_df["Chủ đề bài viết"] = df.apply(format_categories, axis=1)
-            out_df["Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)"] = df["user_review_vi"].fillna("")
-            out_df["Từ lóng mới bổ sung (nếu có)"] = df.apply(format_user_keywords, axis=1)
+            out_df["Bài viết"] = df.apply(format_post_content, axis=1).apply(lambda s: " ".join(str(s).split()))
+            out_df["f0"] = df["f0"].apply(clean_field) if "f0" in df.columns else ""
+            out_df["f1"] = df["f1"].apply(clean_field) if "f1" in df.columns else ""
+            out_df["f2"] = df["f2"].apply(clean_field) if "f2" in df.columns else ""
+            out_df["f3"] = df["f3"].apply(clean_field) if "f3" in df.columns else ""
+            out_df["Nội dung"] = (df["comment_content"].apply(clean_to_viet_eng) if viet_eng_only else df["comment_content"]).apply(lambda s: " ".join(str(s).split()))
+            out_df["Điểm đánh giá"] = df.apply(format_score_display, axis=1).apply(lambda s: " ".join(str(s).split()))
+            out_df["Chủ đề bài viết"] = df.apply(format_categories, axis=1).apply(lambda s: " ".join(str(s).split()))
+            out_df["Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)"] = df["user_review_vi"].fillna("").apply(lambda s: " ".join(str(s).split()))
+            out_df["Từ lóng mới bổ sung (nếu có)"] = df.apply(format_user_keywords, axis=1).apply(lambda s: " ".join(str(s).split()))
 
             return out_df
+
+    def backfill_comment_generations(self) -> int:
+        """
+        Reconstruct and populate f0, f1, f2, f3 and reply_level for all comments in the database.
+        Detects thread hierarchies based on:
+        1. Existing parent_comment_id or reply indicators.
+        2. Sequence order and conversation dialogue flows (post author vs commenters, replies).
+        Returns the number of comments updated.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            post_rows = cursor.execute("SELECT id, author_username FROM posts").fetchall()
+            post_authors = {r["id"]: r["author_username"] for r in post_rows}
+
+            comments = cursor.execute("""
+                SELECT rowid, id, post_id, author_username, content, reply_to, is_reply, parent_comment_id
+                FROM comments
+                ORDER BY rowid ASC
+            """).fetchall()
+
+            if not comments:
+                return 0
+
+            from collections import defaultdict
+            comments_by_post = defaultdict(list)
+            for c in comments:
+                comments_by_post[c["post_id"]].append(dict(c))
+
+            updates = []
+            for post_id, c_list in comments_by_post.items():
+                post_author = post_authors.get(post_id, "")
+                current_f0 = ""
+                current_f0_author = ""
+                current_f1 = ""
+                current_f1_author = ""
+                current_f2 = ""
+                current_f2_author = ""
+                current_f3 = ""
+                current_level = 0
+
+                for idx, cmt in enumerate(c_list):
+                    c_id = cmt["id"]
+                    author = cmt["author_username"] or ""
+                    content = cmt["content"] or ""
+                    reply_to = cmt.get("reply_to") or ""
+                    existing_is_reply = cmt.get("is_reply") or 0
+                    parent_id = cmt.get("parent_comment_id") or ""
+
+                    is_reply = False
+                    if reply_to or existing_is_reply == 1 or parent_id:
+                        is_reply = True
+
+                    if not is_reply and current_f0:
+                        if author == post_author and current_f0_author != post_author:
+                            is_reply = True
+                        elif author == current_f0_author and current_f1_author:
+                            is_reply = True
+                        elif any(kw in content.lower() for kw in ["bà ơi", "bác ơi", "bạn ơi", "bác nói", "bà nói", "đúng z", "chuẩn nè", "ý là", "thế à", "vả nó", "chửi nó"]):
+                            is_reply = True
+
+                    if not is_reply:
+                        current_f0 = content
+                        current_f0_author = author
+                        current_f1 = ""
+                        current_f1_author = ""
+                        current_f2 = ""
+                        current_f2_author = ""
+                        current_f3 = ""
+                        current_level = 0
+
+                        updates.append((
+                            "",  # f0: empty when cmt is root ("nếu cmt cần xử lý là reply")
+                            "",  # f1
+                            "",  # f2
+                            "",  # f3
+                            0,   # reply_level
+                            0,   # is_reply
+                            "Bình luận gốc",
+                            c_id
+                        ))
+                    else:
+                        current_level += 1
+                        level = current_level
+
+                        if level == 1:
+                            current_f1 = content
+                            current_f1_author = author
+                            f0_val = current_f0
+                            f1_val = current_f1
+                            f2_val = ""
+                            f3_val = ""
+                            cmt_type = "Bình luận con (F1)"
+                        elif level == 2:
+                            current_f2 = content
+                            current_f2_author = author
+                            f0_val = current_f0
+                            f1_val = current_f1
+                            f2_val = current_f2
+                            f3_val = ""
+                            cmt_type = "Bình luận con (F2)"
+                        elif level == 3:
+                            current_f3 = content
+                            f0_val = current_f0
+                            f1_val = current_f1
+                            f2_val = current_f2
+                            f3_val = current_f3
+                            cmt_type = "Bình luận con (F3)"
+                        else:
+                            f0_val = current_f0
+                            f1_val = current_f1
+                            f2_val = current_f2
+                            f3_val = current_f3
+                            cmt_type = f"Bình luận con (F{level})"
+
+                        updates.append((
+                            f0_val,
+                            f1_val,
+                            f2_val,
+                            f3_val,
+                            level,
+                            1,
+                            cmt_type,
+                            c_id
+                        ))
+
+            if updates:
+                cursor.executemany("""
+                    UPDATE comments
+                    SET f0 = ?,
+                        f1 = ?,
+                        f2 = ?,
+                        f3 = ?,
+                        reply_level = ?,
+                        is_reply = ?,
+                        comment_type_vi = ?
+                    WHERE id = ?
+                """, updates)
+                conn.commit()
+                logger.info(f"Backfilled generations (f0, f1, f2, f3) for {len(updates)} comments.")
+
+            return len(updates)
+
 
     def purge_foreign_language_records(self) -> Dict[str, int]:
         """
@@ -1028,6 +1257,146 @@ class DatabaseManager:
             "purged_posts": purged_posts,
             "cleaned_comments": cleaned_comments
         }
+
+    def delete_comments(self, comment_ids: List[str]) -> int:
+        """
+        Delete specific comments by ID list.
+        Returns the number of deleted records.
+        """
+        if not comment_ids:
+            return 0
+        valid_ids = [str(cid).strip() for cid in comment_ids if cid and str(cid).strip()]
+        if not valid_ids:
+            return 0
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            total_deleted = 0
+            batch_size = 500
+            for i in range(0, len(valid_ids), batch_size):
+                batch = valid_ids[i:i + batch_size]
+                placeholders = ",".join(["?"] * len(batch))
+                cursor.execute(f"DELETE FROM comments WHERE id IN ({placeholders})", batch)
+                total_deleted += cursor.rowcount
+            conn.commit()
+
+        logger.info(f"User deleted {total_deleted} comments successfully.")
+        return total_deleted
+
+    def delete_comments_by_filter(
+        self,
+        search_kw: str = "",
+        author_username: str = "",
+        max_length: Optional[int] = None,
+        filter_status: str = "all",
+        filter_comment_type: str = "all"
+    ) -> int:
+        """
+        Bulk delete comments matching criteria (e.g. short spam, specific keyword, or spam author).
+        Returns the count of deleted records.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = "DELETE FROM comments WHERE 1=1"
+            params = []
+
+            if search_kw:
+                query += " AND (content LIKE ? OR matched_words LIKE ?)"
+                kw_wildcard = f"%{search_kw.strip()}%"
+                params.extend([kw_wildcard, kw_wildcard])
+
+            if author_username:
+                clean_user = author_username.strip().lstrip("@")
+                query += " AND author_username = ?"
+                params.append(clean_user)
+
+            if max_length is not None and max_length > 0:
+                query += " AND LENGTH(TRIM(content)) <= ?"
+                params.append(int(max_length))
+
+            if filter_status == "bad":
+                query += " AND (review_status = 'bad' OR toxic_score >= 0.5)"
+            elif filter_status == "ambiguous":
+                query += " AND (review_status = 'ambiguous' OR (toxic_score >= 0.15 AND toxic_score < 0.5))"
+            elif filter_status == "clean":
+                query += " AND (review_status = 'clean' OR toxic_score < 0.15)"
+
+            if filter_comment_type == "root":
+                query += " AND (is_reply = 0 OR is_reply IS NULL)"
+            elif filter_comment_type == "reply":
+                query += " AND is_reply = 1"
+
+            cursor.execute(query, params)
+            deleted_count = cursor.rowcount
+            conn.commit()
+
+        logger.info(f"Bulk deleted {deleted_count} comments matching filter criteria.")
+        return deleted_count
+
+    def get_comments_for_cleanup_df(
+        self,
+        search_kw: str = "",
+        author_username: str = "",
+        max_length: Optional[int] = None,
+        filter_status: str = "all",
+        filter_comment_type: str = "all",
+        limit: Optional[int] = 500
+    ) -> pd.DataFrame:
+        """
+        Fetch filtered comments formatted for interactive cleanup table.
+        Includes columns: id, author_username, content, length, comment_type_vi, reply_level, review_status_vi, likes, scraped_at.
+        """
+        with self.get_connection() as conn:
+            query = """
+                SELECT 
+                    id,
+                    author_username,
+                    content,
+                    LENGTH(TRIM(content)) as content_length,
+                    comment_type_vi,
+                    reply_level,
+                    review_status_vi,
+                    f0,
+                    f1,
+                    likes,
+                    scraped_at
+                FROM comments
+                WHERE 1=1
+            """
+            params = []
+
+            if search_kw:
+                query += " AND (content LIKE ? OR matched_words LIKE ?)"
+                kw_wildcard = f"%{search_kw.strip()}%"
+                params.extend([kw_wildcard, kw_wildcard])
+
+            if author_username:
+                clean_user = author_username.strip().lstrip("@")
+                query += " AND author_username = ?"
+                params.append(clean_user)
+
+            if max_length is not None and max_length > 0:
+                query += " AND LENGTH(TRIM(content)) <= ?"
+                params.append(int(max_length))
+
+            if filter_status == "bad":
+                query += " AND (review_status = 'bad' OR toxic_score >= 0.5)"
+            elif filter_status == "ambiguous":
+                query += " AND (review_status = 'ambiguous' OR (toxic_score >= 0.15 AND toxic_score < 0.5))"
+            elif filter_status == "clean":
+                query += " AND (review_status = 'clean' OR toxic_score < 0.15)"
+
+            if filter_comment_type == "root":
+                query += " AND (is_reply = 0 OR is_reply IS NULL)"
+            elif filter_comment_type == "reply":
+                query += " AND is_reply = 1"
+
+            query += " ORDER BY scraped_at DESC"
+            if limit is not None and limit > 0:
+                query += f" LIMIT {int(limit)}"
+
+            df = pd.read_sql_query(query, conn, params=params)
+            return df
 
     def clear_all_data(self) -> Dict[str, int]:
         """

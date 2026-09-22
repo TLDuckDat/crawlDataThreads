@@ -110,6 +110,15 @@ class ThreadsCrawler:
             main_post_saved = False
             main_post_id = generate_item_id("post", canonical_url, "", "")
             current_parent_comment_id = ""
+            current_f0 = ""
+            current_f0_author = ""
+            current_f1 = ""
+            current_f1_author = ""
+            current_f2 = ""
+            current_f2_author = ""
+            current_f3 = ""
+            current_level = 0
+            current_thread_open = False
 
             while current_scroll < max_scrolls:
                 if stop_check and stop_check():
@@ -190,16 +199,87 @@ class ThreadsCrawler:
                     new_items_in_round += 1
                     scraped_comments += 1
 
-                    # Determine root vs child comment
-                    if is_reply_item:
-                        scraped_child_comments += 1
-                        comment_type_vi = "Bình luận con (Phản hồi)"
+                    has_down_connector = item.get("hasDownConnector", False)
+
+                    # Determine generation / hierarchy (f0, f1, f2, f3, reply_level)
+                    if current_thread_open:
+                        is_reply_item = True
+                        current_level += 1
+                        reply_level = current_level
                         parent_comment_id = current_parent_comment_id
+
+                        if current_level == 1:
+                            current_f1 = content
+                            current_f1_author = username
+                            f0 = current_f0
+                            f1 = current_f1
+                            f2 = ""
+                            f3 = ""
+                            comment_type_vi = "Bình luận con (F1)"
+                        elif current_level == 2:
+                            current_f2 = content
+                            current_f2_author = username
+                            f0 = current_f0
+                            f1 = current_f1
+                            f2 = current_f2
+                            f3 = ""
+                            comment_type_vi = "Bình luận con (F2)"
+                        elif current_level == 3:
+                            current_f3 = content
+                            f0 = current_f0
+                            f1 = current_f1
+                            f2 = current_f2
+                            f3 = current_f3
+                            comment_type_vi = "Bình luận con (F3)"
+                        else:
+                            f0 = current_f0
+                            f1 = current_f1
+                            f2 = current_f2
+                            f3 = current_f3
+                            comment_type_vi = f"Bình luận con (F{current_level})"
+
+                        scraped_child_comments += 1
+                        if not has_down_connector:
+                            current_thread_open = False
                     else:
-                        scraped_root_comments += 1
-                        comment_type_vi = "Bình luận gốc"
-                        current_parent_comment_id = comment_id
-                        parent_comment_id = ""
+                        if is_reply_item or reply_to:
+                            scraped_child_comments += 1
+                            current_level = 1
+                            reply_level = 1
+                            parent_comment_id = current_parent_comment_id
+                            current_f1 = content
+                            f0 = current_f0
+                            f1 = current_f1
+                            f2 = ""
+                            f3 = ""
+                            comment_type_vi = "Bình luận con (F1)"
+                            if has_down_connector:
+                                current_thread_open = True
+                            else:
+                                current_thread_open = False
+                        else:
+                            scraped_root_comments += 1
+                            current_f0 = content
+                            current_f0_author = username
+                            current_f1 = ""
+                            current_f1_author = ""
+                            current_f2 = ""
+                            current_f2_author = ""
+                            current_f3 = ""
+                            current_level = 0
+                            reply_level = 0
+                            is_reply_item = False
+                            parent_comment_id = ""
+                            current_parent_comment_id = comment_id
+                            comment_type_vi = "Bình luận gốc"
+                            f0 = ""
+                            f1 = ""
+                            f2 = ""
+                            f3 = ""
+                            if has_down_connector:
+                                current_thread_open = True
+                            else:
+                                current_thread_open = False
 
                     # Run Toxic Analysis (Words + Slang + Emojis)
                     analysis = toxic_engine.analyze(content)
@@ -222,6 +302,11 @@ class ThreadsCrawler:
                         is_reply=is_reply_item,
                         parent_comment_id=parent_comment_id,
                         comment_type_vi=comment_type_vi,
+                        f0=f0,
+                        f1=f1,
+                        f2=f2,
+                        f3=f3,
+                        reply_level=reply_level,
                         image_urls=image_urls,
                         is_toxic=analysis.is_toxic,
                         toxic_score=analysis.score,

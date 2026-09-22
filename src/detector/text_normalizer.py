@@ -111,12 +111,13 @@ def clean_to_viet_eng(text: str) -> str:
     """
     Strips out foreign characters (Chinese, Japanese, Korean, Thai, etc.)
     leaving only Vietnamese and English letters, numbers, punctuation, and emojis.
+    Collapses all redundant spaces, newlines, and tabs.
     """
     if not text:
         return ""
     cleaned = FOREIGN_SCRIPTS_PATTERN.sub('', text)
-    # Collapse multiple spaces
-    cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
+    # Collapse multiple whitespace (spaces, tabs, newlines) into single space
+    cleaned = " ".join(cleaned.split())
     return cleaned
 
 def is_valid_viet_eng_content(text: str, max_foreign_ratio: float = 0.15) -> bool:

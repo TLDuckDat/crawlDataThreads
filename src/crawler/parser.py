@@ -205,6 +205,18 @@ return (() => {
         }
 
         // Check 3: Check visual hierarchy (connector line or indentation)
+        let hasDownConnector = false;
+        const allDivs = el.querySelectorAll('div');
+        for (const d of allDivs) {
+            const s = window.getComputedStyle(d);
+            const w = parseFloat(s.width || '0');
+            const h = parseFloat(s.height || '0');
+            if (w >= 1.5 && w <= 3.5 && h > 8 && s.position === 'absolute') {
+                hasDownConnector = true;
+                break;
+            }
+        }
+
         if (!isReply) {
             const style = window.getComputedStyle(el);
             const paddingLeft = parseInt(style.paddingLeft || '0', 10);
@@ -287,6 +299,7 @@ return (() => {
                 timeStr: timeStr,
                 likes: likes,
                 isReply: isReply,
+                hasDownConnector: hasDownConnector,
                 replyTo: replyTo,
                 imageUrls: imgs.slice(0, 3),
                 content: chosenContent

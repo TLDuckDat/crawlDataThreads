@@ -20,7 +20,7 @@ from src.database.db_manager import db_manager
 from src.detector.toxic_engine import toxic_engine
 from src.crawler.threads_crawler import ThreadsCrawler
 from src.crawler.browser import BrowserManager
-from src.crawler.task_manager import crawler_task_manager
+from src.crawler.task_manager import crawler_task_manager, parse_multi_urls
 from src.exporter.exporter import exporter
 
 # Page configuration
@@ -132,6 +132,7 @@ st.sidebar.caption("Thu thập & phát hiện từ lóng, xúc phạm, icon đ�
 menu_options = [
     "🚀 Trung tâm Cào dữ liệu",
     "⚡ Gán nhãn từng bình luận (Siêu tốc)",
+    "🧹 Lọc & Xóa bình luận (Làm sạch dữ liệu)",
     "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)",
     "📋 Dữ liệu & Tự đánh giá (Học máy)",
     "📊 Thống kê & Phân tích",
@@ -160,7 +161,10 @@ menu = st.sidebar.radio(
 def render_sidebar_task_status():
     task = crawler_task_manager.get_status()
     if task["is_running"]:
-        target_display = task['target'][:26] + ("..." if len(task['target']) > 26 else "")
+        if task.get("total_links", 1) > 1:
+            target_display = f"Link {task.get('current_link_idx', 1)}/{task.get('total_links', 1)}"
+        else:
+            target_display = task['target'][:26] + ("..." if len(task['target']) > 26 else "")
         st.markdown(f"""
         <div style='background: #EFF6FF; border: 1.5px solid #3B82F6; padding: 10px; border-radius: 8px; margin-top: 15px;'>
             <div style='color: #1D4ED8; font-weight: bold; font-size: 13px;'>🟢 ĐANG CÀO DỮ LIỆU NGẦM</div>
@@ -173,9 +177,10 @@ def render_sidebar_task_status():
             crawler_task_manager.stop_crawl()
             st.rerun()
     elif task["result"] and not task["error"]:
+        link_count_str = f" ({task.get('total_links', 1)} links)" if task.get("total_links", 1) > 1 else ""
         st.markdown(f"""
         <div style='background: #ECFDF5; border: 1px solid #A7F3D0; padding: 8px; border-radius: 8px; margin-top: 15px;'>
-            <div style='color: #047857; font-weight: bold; font-size: 12px;'>✅ LƯỢT CÀO GẦN NHẤT XONG</div>
+            <div style='color: #047857; font-weight: bold; font-size: 12px;'>✅ LƯỢT CÀO GẦN NHẤT XONG{link_count_str}</div>
             <div style='font-size: 11px; color: #065F46;'>Đã cào: {task['scraped_count']} ({task['toxic_count']} vi phạm)</div>
         </div>
         """, unsafe_allow_html=True)
@@ -200,7 +205,10 @@ if menu == "🚀 Trung tâm Cào dữ liệu":
     def render_crawl_live_panel():
         task = crawler_task_manager.get_status()
         if task["is_running"]:
-            st.info(f"🔄 **TIẾN TRÌNH CÀO ĐANG CHẠY TRONG NỀN** — Bạn có thể chuyển sang tab khác tùy ý mà không sợ bị dừng!")
+            if task.get("total_links", 1) > 1:
+                st.info(f"🔄 **TIẾN TRÌNH CÀO HÀNG ĐỢI ĐANG CHẠY TRONG NỀN** — Đang cào link **{task.get('current_link_idx', 1)}/{task.get('total_links', 1)}**: `{task.get('target', '')}`")
+            else:
+                st.info(f"🔄 **TIẾN TRÌNH CÀO ĐANG CHẠY TRONG NỀN** — Bạn có thể chuyển sang tab khác tùy ý mà không sợ bị dừng!")
             
             c_m1, c_m2, c_m3, c_m4 = st.columns(4)
             c_m1.metric("Tổng đã cào", task["scraped_count"])
@@ -210,8 +218,9 @@ if menu == "🚀 Trung tâm Cào dữ liệu":
 
             # Progress bar
             if task["max_items"] > 0:
-                pct = min(1.0, task["scraped_count"] / task["max_items"])
-                st.progress(pct, text=f"Tiến độ: {task['scraped_count']} / {task['max_items']} ({int(pct*100)}%) | Thời gian: {int(task['elapsed_seconds'])}s")
+                expected_total = task["max_items"] * max(1, task.get("total_links", 1))
+                pct = min(1.0, task["scraped_count"] / max(1, expected_total))
+                st.progress(pct, text=f"Tiến độ: {task['scraped_count']} / {expected_total} bình luận ({int(pct*100)}%) | Thời gian: {int(task['elapsed_seconds'])}s")
             else:
                 st.progress(min(1.0, (task["scraped_count"] % 100) / 100.0), text=f"Chế độ không giới hạn: Đã cào {task['scraped_count']} mục | Thời gian: {int(task['elapsed_seconds'])}s...")
 
@@ -245,7 +254,9 @@ if menu == "🚀 Trung tâm Cào dữ liệu":
         # Show recent result summary if available
         if task_status["result"]:
             res = task_status["result"]
-            st.success(f"🎉 Lượt cào gần nhất đã hoàn tất! Thu thập: {task_status['scraped_count']} mục (Gốc: {task_status['root_count']}, Con/phản hồi: {task_status['child_count']}). Phát hiện: {task_status['toxic_count']} độc hại.")
+            total_l = task_status.get("total_links", 1)
+            links_summary = f"từ {total_l} bài viết " if total_l > 1 else ""
+            st.success(f"🎉 Lượt cào gần nhất đã hoàn tất! Thu thập {links_summary}: {task_status['scraped_count']} mục (Gốc: {task_status['root_count']}, Con/phản hồi: {task_status['child_count']}). Phát hiện: {task_status['toxic_count']} độc hại.")
             if task_status["login_wall_hit"]:
                 st.warning("⚠️ **Lưu ý:** Quá trình cào đã dừng lại do chạm tường đăng nhập của Meta Threads (~20 bình luận gốc). Nếu bạn muốn cào toàn bộ hơn 1.300 bình luận, vui lòng mở mục **🔑 Đăng nhập Threads** ở bên dưới để đăng nhập tài khoản 1 lần duy nhất.")
             if st.button("✖️ Đóng thông báo hoàn tất"):
@@ -257,10 +268,18 @@ if menu == "🚀 Trung tâm Cào dữ liệu":
         col1, col2 = st.columns([3, 1])
         with col1:
             if crawl_type == "Link bài viết cụ thể (Cào sâu bình luận)":
-                target_input = st.text_input(
-                    "Nhập URL bài viết Threads:",
-                    placeholder="https://www.threads.net/@zuck/post/DdZ7sQvkTFn hoặc bất kỳ link bài viết nào"
+                target_input = st.text_area(
+                    "Nhập một hoặc nhiều URL bài viết Threads (mỗi link 1 dòng, hoặc cách nhau bằng dấu phẩy):",
+                    placeholder="https://www.threads.net/@user1/post/DdZ7sQvkTFn\nhttps://www.threads.net/@user2/post/xyz123abc\nhttps://www.threads.net/@user3/post/demo456",
+                    height=130,
+                    help="Hỗ trợ dán cùng lúc nhiều link bài viết Threads. Hệ thống sẽ tự động lọc, nhận diện và xếp hàng để cào liên tiếp tự động."
                 )
+                detected_urls = parse_multi_urls(target_input)
+                if detected_urls:
+                    if len(detected_urls) > 1:
+                        st.info(f"📋 **Hàng đợi đã nhận diện {len(detected_urls)} link hợp lệ:** " + ", ".join([f"`{u[:35]}...`" if len(u) > 35 else f"`{u}`" for u in detected_urls[:3]]) + (f" và {len(detected_urls)-3} link khác" if len(detected_urls) > 3 else ""))
+                    else:
+                        st.info(f"📋 **Đã nhận diện 1 link bài viết:** `{detected_urls[0]}`")
             else:
                 target_input = st.text_input(
                     "Nhập từ khóa tìm kiếm (Drama / Phốt / Từ lóng / Chủ đề nóng):",
@@ -277,7 +296,7 @@ if menu == "🚀 Trung tâm Cào dữ liệu":
                 max_items = 0
                 st.info("⚡ Chế độ không giới hạn: Không giới hạn số lượng, cào liên tục đến khi hết nội dung.")
             else:
-                max_items = st.number_input("Số lượng tối đa:", min_value=1, max_value=1000000, value=50, step=10)
+                max_items = st.number_input("Số lượng tối đa mỗi link / từ khóa:", min_value=1, max_value=1000000, value=50, step=10)
 
         with st.expander("🔑 Đăng nhập Threads (Để cào toàn bộ 1.3K+ bình luận không bị giới hạn 20)", expanded=False):
             st.markdown("""
@@ -310,12 +329,21 @@ if menu == "🚀 Trung tâm Cào dữ liệu":
                 st.warning("Vui lòng nhập URL bài viết hoặc từ khóa tìm kiếm!")
             else:
                 if "Link bài viết cụ thể" in crawl_type:
-                    started = crawler_task_manager.start_post_crawl(
-                        post_url=target_input.strip(),
-                        max_comments=max_items,
-                        scroll_delay=delay,
-                        headless=headless
-                    )
+                    urls_to_crawl = parse_multi_urls(target_input)
+                    if not urls_to_crawl:
+                        st.warning("Vui lòng nhập ít nhất một URL bài viết Threads hợp lệ!")
+                    else:
+                        started = crawler_task_manager.start_multi_post_crawl(
+                            post_urls=urls_to_crawl,
+                            max_comments=max_items,
+                            scroll_delay=delay,
+                            headless=headless
+                        )
+                        if started:
+                            st.success(f"🚀 Đã khởi động cào hàng đợi {len(urls_to_crawl)} bài viết Threads! Bạn có thể tự do chuyển sang tab khác.")
+                            st.rerun()
+                        else:
+                            st.error("Tiến trình cào khác đang chạy. Vui lòng dừng tiến trình cũ trước khi bắt đầu lượt mới!")
                 else:
                     started = crawler_task_manager.start_search_crawl(
                         query=target_input.strip(),
@@ -323,11 +351,11 @@ if menu == "🚀 Trung tâm Cào dữ liệu":
                         scroll_delay=delay,
                         headless=headless
                     )
-                if started:
-                    st.success("🚀 Đã khởi động tiến trình cào dữ liệu chạy ngầm! Bạn có thể tự do chuyển sang tab khác.")
-                    st.rerun()
-                else:
-                    st.error("Tiến trình cào khác đang chạy. Vui lòng dừng tiến trình cũ trước khi bắt đầu lượt mới!")
+                    if started:
+                        st.success("🚀 Đã khởi động tiến trình cào dữ liệu chạy ngầm! Bạn có thể tự do chuyển sang tab khác.")
+                        st.rerun()
+                    else:
+                        st.error("Tiến trình cào khác đang chạy. Vui lòng dừng tiến trình cũ trước khi bắt đầu lượt mới!")
 
 # TAB: FOCUS SINGLE-COMMENT REVIEW & FAST LABELING
 elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
@@ -608,6 +636,26 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
                         f"</div>"
                     )
 
+            # Context quote box (Conversation Hierarchy F0 -> F1 -> F2 -> F3)
+            f0_text = item.get("f0") or ""
+            f1_text = item.get("f1") or ""
+            f2_text = item.get("f2") or ""
+            f3_text = item.get("f3") or ""
+            r_level = item.get("reply_level") or 0
+            if f0_text or f1_text:
+                with st.expander(f"🌳 Chuỗi phản hồi phân cấp (Thế hệ: F{r_level})", expanded=True):
+                    tree_html = "<div class='context-quote' style='border-left-color: #6366F1; background: #EEF2FF;'>"
+                    if f0_text:
+                        tree_html += f"<span style='color:#4338CA; font-weight:bold;'>[F0 - Bình luận gốc]:</span> {html.escape(f0_text)}<br><br>"
+                    if f1_text:
+                        tree_html += f"<span style='color:#4338CA; font-weight:bold;'>[F1 - Reply cấp 1]:</span> {html.escape(f1_text)}<br><br>"
+                    if f2_text:
+                        tree_html += f"<span style='color:#4338CA; font-weight:bold;'>[F2 - Reply cấp 2]:</span> {html.escape(f2_text)}<br><br>"
+                    if f3_text:
+                        tree_html += f"<span style='color:#4338CA; font-weight:bold;'>[F3 - Reply cấp 3]:</span> {html.escape(f3_text)}<br>"
+                    tree_html += "</div>"
+                    st.html(tree_html)
+
             # 5. Interactive Bad Word Picker (Chọn từ xấu trực tiếp)
             st.markdown("#### 🎯 Chọn từ xấu &amp; Từ lóng độc hại trong bình luận này:")
             candidate_tokens = extract_candidate_words(
@@ -723,10 +771,220 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
                     st.session_state["focus_current_idx"] = min(total_matching - 1, cur_idx + 1)
                     st.rerun()
 
+# TAB: COMMENT CLEANUP & USER FILTER
+elif menu == "🧹 Lọc & Xóa bình luận (Làm sạch dữ liệu)":
+    st.markdown('<div class="main-header">🧹 Lọc & Xóa Bình Luận Rác (Làm Sạch Dữ Liệu)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Tự tay tìm kiếm, lọc đa chiều và <b>xóa bỏ các bình luận spam, link rác, bình luận quá ngắn hoặc không liên quan</b> để khi xuất file Excel/CSV đạt chất lượng cao nhất.</div>', unsafe_allow_html=True)
+
+    stats = db_manager.get_stats()
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("Tổng bình luận CSDL", f"{stats['total_comments']:,}")
+    with m2:
+        st.metric("Bình luận gốc", f"{stats['total_root_comments']:,}")
+    with m3:
+        st.metric("Bình luận con (Replies)", f"{stats['total_child_comments']:,}")
+    with m4:
+        st.metric("Bình luận độc hại", f"{stats['toxic_comments']:,}")
+
+    st.markdown("---")
+
+    # Filter section
+    with st.expander("🔍 BỘ LỌC TÌM KIẾM BÌNH LUẬN NÂNG CAO", expanded=True):
+        f_r1_c1, f_r1_c2 = st.columns([2.5, 1.5])
+        with f_r1_c1:
+            search_kw = st.text_input(
+                "🔎 Tìm kiếm nội dung hoặc từ khóa:",
+                value=st.session_state.get("clean_search_kw", ""),
+                placeholder="Nhập từ cần tìm (vd: inbox, shopee, link bio, zalo...)...",
+                key="input_clean_search_kw"
+            )
+            # Quick spam keyword pills
+            spam_presets = ["inbox", "shopee", "link bio", "zalo", "telegram", "ib", "check ib", "theo dõi"]
+            st.caption("⚡ Gợi ý từ khóa spam/rác phổ biến (Click để điền nhanh):")
+            pill_cols = st.columns(len(spam_presets))
+            for p_idx, p_word in enumerate(spam_presets):
+                with pill_cols[p_idx]:
+                    if st.button(p_word, key=f"btn_p_{p_word}", use_container_width=True):
+                        st.session_state["clean_search_kw"] = p_word
+                        st.rerun()
+
+        with f_r1_c2:
+            author_kw = st.text_input(
+                "👤 Lọc theo tác giả (@username):",
+                placeholder="vd: spambot123...",
+                key="input_clean_author"
+            )
+
+        f_r2_c1, f_r2_c2, f_r2_c3 = st.columns(3)
+        with f_r2_c1:
+            filter_status = st.selectbox(
+                "Đánh giá phân loại:",
+                ["Tất cả", "Xấu luôn (Rõ ràng)", "Chưa rõ (Nghi ngờ)", "Trong sạch"],
+                index=0,
+                key="sel_clean_status"
+            )
+            status_map = {
+                "Tất cả": "all",
+                "Xấu luôn (Rõ ràng)": "bad",
+                "Chưa rõ (Nghi ngờ)": "ambiguous",
+                "Trong sạch": "clean"
+            }
+        with f_r2_c2:
+            filter_ctype = st.selectbox(
+                "Loại bình luận:",
+                ["Tất cả", "Chỉ bình luận gốc", "Chỉ bình luận con (Phản hồi)"],
+                index=0,
+                key="sel_clean_ctype"
+            )
+            ctype_map = {
+                "Tất cả": "all",
+                "Chỉ bình luận gốc": "root",
+                "Chỉ bình luận con (Phản hồi)": "reply"
+            }
+        with f_r2_c3:
+            enable_len_filter = st.checkbox("Lọc theo độ dài ký tự tối đa", value=False, key="cb_len_filter")
+            max_len = st.number_input("Độ dài nội dung tối đa (ký tự):", min_value=1, max_value=500, value=3, disabled=not enable_len_filter, key="num_max_len") if enable_len_filter else None
+
+    # Fetch data
+    df_raw = db_manager.get_comments_for_cleanup_df(
+        search_kw=search_kw,
+        author_username=author_kw,
+        max_length=max_len,
+        filter_status=status_map[filter_status],
+        filter_comment_type=ctype_map[filter_ctype],
+        limit=1000
+    )
+
+    total_found = len(df_raw)
+    st.markdown(f"### 📋 Danh sách bình luận tìm thấy: **{total_found}** bình luận")
+
+    if df_raw.empty:
+        st.info("ℹ️ Không tìm thấy bình luận nào khớp với bộ lọc hiện tại.")
+    else:
+        # Prepare editable DataFrame with checkbox
+        df_editor_input = df_raw.copy()
+        df_editor_input.insert(0, "Xóa", False)
+
+        # Apply previous selections if stored
+        sel_all_key = f"select_all_{search_kw}_{author_kw}_{filter_status}_{filter_ctype}"
+        if st.session_state.get(sel_all_key, False):
+            df_editor_input["Xóa"] = True
+
+        c_act1, c_act2, c_act3 = st.columns([1.5, 1.5, 3])
+        with c_act1:
+            if st.button("☑️ Chọn tất cả", use_container_width=True, key="btn_sel_all_clean"):
+                st.session_state[sel_all_key] = True
+                st.rerun()
+        with c_act2:
+            if st.button("🔄 Bỏ chọn tất cả", use_container_width=True, key="btn_desel_all_clean"):
+                st.session_state[sel_all_key] = False
+                st.rerun()
+
+        # Display interactive editor
+        edited_df = st.data_editor(
+            df_editor_input,
+            column_config={
+                "Xóa": st.column_config.CheckboxColumn(
+                    "Xóa?",
+                    help="Tích chọn các dòng muốn xóa bỏ",
+                    default=False
+                ),
+                "id": st.column_config.TextColumn("Mã ID", width="small", disabled=True),
+                "author_username": st.column_config.TextColumn("Tác giả", width="medium", disabled=True),
+                "content": st.column_config.TextColumn("Nội dung", width="large", disabled=True),
+                "content_length": st.column_config.NumberColumn("Độ dài", width="small", disabled=True),
+                "comment_type_vi": st.column_config.TextColumn("Loại", width="small", disabled=True),
+                "reply_level": st.column_config.NumberColumn("Thế hệ (F)", width="small", disabled=True),
+                "review_status_vi": st.column_config.TextColumn("Đánh giá", width="medium", disabled=True),
+                "f0": st.column_config.TextColumn("F0 (Gốc)", width="medium", disabled=True),
+                "f1": st.column_config.TextColumn("F1", width="medium", disabled=True),
+                "likes": st.column_config.NumberColumn("Likes", width="small", disabled=True),
+                "scraped_at": st.column_config.TextColumn("Thời gian cào", width="medium", disabled=True),
+            },
+            hide_index=True,
+            use_container_width=True,
+            height=380,
+            key=f"cleanup_editor_{search_kw}_{author_kw}_{filter_status}"
+        )
+
+        # Get selected rows to delete
+        selected_ids = edited_df[edited_df["Xóa"] == True]["id"].tolist()
+        count_selected = len(selected_ids)
+
+        st.markdown("---")
+        # Action Bar
+        col_del1, col_del2 = st.columns([2.5, 1.5])
+        with col_del1:
+            confirm_del = st.checkbox(
+                f"⚠️ Tôi xác nhận muốn xóa vĩnh viễn **{count_selected}** bình luận đã chọn khỏi cơ sở dữ liệu.",
+                value=False,
+                key="cb_confirm_del_selected"
+            )
+            if st.button(
+                f"🗑️ XÓA {count_selected} BÌNH LUẬN ĐÃ CHỌN",
+                type="primary",
+                disabled=(count_selected == 0 or not confirm_del),
+                use_container_width=True,
+                key="btn_exec_del_selected"
+            ):
+                deleted_n = db_manager.delete_comments(selected_ids)
+                db_manager.backfill_comment_generations()
+                st.session_state[sel_all_key] = False
+                st.success(f"🎉 Đã xóa thành công {deleted_n} bình luận khỏi CSDL!")
+                time.sleep(1)
+                st.rerun()
+
+        with col_del2:
+            st.info("💡 Sau khi xóa, dữ liệu sẽ tự động được làm sạch và cập nhật lại chuỗi phân cấp F0-F3.")
+
+        # Batch condition cleanup in expander
+        with st.expander("⚡ XÓA NHANH HÀNG LOẠT THEO ĐIỀU KIỆN", expanded=False):
+            st.warning("⚠️ Các thao tác dưới đây sẽ xóa trực tiếp toàn bộ các bản ghi thỏa mãn điều kiện!")
+            b_c1, b_c2 = st.columns(2)
+            with b_c1:
+                if search_kw:
+                    confirm_kw = st.checkbox(f"Xác nhận xóa TẤT CẢ bình luận chứa '{search_kw}'", key="cb_conf_kw")
+                    if st.button(f"🗑️ Xóa toàn bộ bình luận chứa '{search_kw}'", disabled=not confirm_kw, use_container_width=True):
+                        n = db_manager.delete_comments_by_filter(search_kw=search_kw)
+                        db_manager.backfill_comment_generations()
+                        st.success(f"Đã xóa {n} bình luận chứa '{search_kw}'!")
+                        time.sleep(1)
+                        st.rerun()
+
+                confirm_short = st.checkbox("Xác nhận xóa TẤT CẢ bình luận siêu ngắn (<= 2 ký tự)", key="cb_conf_short")
+                if st.button("🗑️ Xóa tất cả bình luận <= 2 ký tự (Icon lẻ/dấu chấm)", disabled=not confirm_short, use_container_width=True):
+                    n = db_manager.delete_comments_by_filter(max_length=2)
+                    db_manager.backfill_comment_generations()
+                    st.success(f"Đã xóa {n} bình luận siêu ngắn!")
+                    time.sleep(1)
+                    st.rerun()
+
+            with b_c2:
+                if author_kw:
+                    confirm_author = st.checkbox(f"Xác nhận xóa TẤT CẢ bình luận của @{author_kw}", key="cb_conf_author")
+                    if st.button(f"🗑️ Xóa toàn bộ bình luận của @{author_kw}", disabled=not confirm_author, use_container_width=True):
+                        n = db_manager.delete_comments_by_filter(author_username=author_kw)
+                        db_manager.backfill_comment_generations()
+                        st.success(f"Đã xóa {n} bình luận của @{author_kw}!")
+                        time.sleep(1)
+                        st.rerun()
+
+    # Link to Export
+    st.markdown("---")
+    c_link1, c_link2 = st.columns([3, 1.2])
+    with c_link1:
+        st.markdown("✨ **Dữ liệu đã được lọc sạch?** Bạn có thể chuyển ngay sang phần xuất file để tải bảng Excel chuẩn fix size và wrap text!")
+    with c_link2:
+        if st.button("👉 Sang trang Xuất Excel & CSV", key="btn_goto_export_page", use_container_width=True):
+            st.session_state["main_menu_choice"] = "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)"
+            st.rerun()
+
 # TAB 2: DETAILED EXCEL & CSV EXPORT
 elif menu == "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)":
     st.markdown('<div class="main-header">📥 Xuất Dữ Liệu Bình Luận Excel & CSV (Đã Fix Kích Thước Ô)</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-header">Hỗ trợ xuất bảng 4 cốt lõi: <b>Nội dung</b>, <b>Điểm đánh giá</b>, <b>Bài viết gốc</b>, <b>Chủ đề bài viết</b> đã được <b>căn chỉnh cố định độ rộng ô và tự động xuống dòng (Wrap Text)</b> để bạn tự đánh giá.</div>', unsafe_allow_html=True)
+    st.info("💡 **Mẹo:** Bạn có thể vào phần **🧹 Lọc & Xóa bình luận (Làm sạch dữ liệu)** ở menu bên trái để loại bỏ các comment rác, spam hoặc không liên quan trước khi xuất file.")
 
     export_style = st.radio(
         "Chọn cấu trúc bảng cần xuất:",
@@ -775,12 +1033,35 @@ elif menu == "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)
     elif "Chỉ bình luận con" in comment_type_select:
         type_code = "reply"
 
+    # Comment Length Filter (Default: 2 to 300 chars, drops < 2 like 'ừ', 'ờ' and > 300)
+    c_len1, c_len2 = st.columns(2)
+    with c_len1:
+        min_char_len = st.number_input(
+            "📏 Độ dài tối thiểu bình luận (Ký tự) - Bỏ qua quá ngắn như ừ, ờ...:",
+            min_value=0,
+            max_value=500,
+            value=2,
+            step=1,
+            help="Bỏ qua các bình luận quá ngắn (như ừ, ờ, icon lẻ hoặc dấu chấm). Mặc định: 2 ký tự."
+        )
+    with c_len2:
+        max_char_len = st.number_input(
+            "📏 Độ dài tối đa bình luận (Ký tự) - Bỏ qua quá dài:",
+            min_value=10,
+            max_value=10000,
+            value=300,
+            step=10,
+            help="Bỏ qua các bình luận spam hoặc quá dài vượt ngưỡng. Mặc định: 300 ký tự."
+        )
+
     if "BẢNG 4 CỘT CHUẨN" in export_style:
         # Curated export table
         df_curated = db_manager.get_curated_export_df(
             filter_status=status_code,
             filter_comment_type=type_code,
-            limit=None
+            limit=None,
+            min_length=min_char_len,
+            max_length=max_char_len
         )
 
         st.markdown("### 👁️ Xem trước bảng 4 cột cốt lõi & Tùy chọn Ẩn/Hiện cột")
@@ -790,19 +1071,26 @@ elif menu == "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)
             # Interactive Column Visibility Selector
             with st.expander("🛠️ TÙY CHỌN ẨN / HIỆN CỘT (Cột bị ẩn trên giao diện sẽ KHÔNG xuất hiện trong file Excel/CSV)", expanded=True):
                 st.markdown("**Bỏ chọn cột nào thì file Excel / CSV tải về sẽ tự động LOẠI BỎ cột đó:**")
-                c_p1, c_p2, c_p3 = st.columns([1.2, 1.4, 1.6])
+                c_p1, c_p2, c_p3, c_p4 = st.columns([1.1, 1.3, 1.3, 1.4])
                 with c_p1:
-                    if st.button("📋 Chọn tất cả cột", key="btn_all_curated"):
+                    if st.button("📋 Chọn tất cả", key="btn_all_curated"):
                         st.session_state["curated_cols_sel"] = all_curated_cols
                         st.rerun()
                 with c_p2:
-                    if st.button("🎯 Chỉ 4 cột cốt lõi", key="btn_4core_curated", help="Nội dung, Điểm đánh giá, Bài viết, Chủ đề bài viết"):
-                        st.session_state["curated_cols_sel"] = ["Nội dung", "Điểm đánh giá", "Bài viết", "Chủ đề bài viết"]
+                    if st.button("🌳 Bài viết ➔ F0-F3 ➔ Cmt", key="btn_f0f3_curated", help="Bài viết, f0, f1, f2, f3, Nội dung, Điểm đánh giá, Chủ đề bài viết"):
+                        st.session_state["curated_cols_sel"] = [
+                            "Bài viết", "f0", "f1", "f2", "f3", "Nội dung",
+                            "Điểm đánh giá", "Chủ đề bài viết"
+                        ]
                         st.rerun()
                 with c_p3:
-                    if st.button("🏷️ 4 cột cốt lõi + Tự đánh giá", key="btn_compact_curated"):
+                    if st.button("🎯 4 cốt lõi (Bài viết ➔ Cmt)", key="btn_4core_curated", help="Bài viết, Nội dung, Điểm đánh giá, Chủ đề bài viết"):
+                        st.session_state["curated_cols_sel"] = ["Bài viết", "Nội dung", "Điểm đánh giá", "Chủ đề bài viết"]
+                        st.rerun()
+                with c_p4:
+                    if st.button("🏷️ Đầy đủ + Tự đánh giá", key="btn_compact_curated"):
                         st.session_state["curated_cols_sel"] = [
-                            "Nội dung", "Điểm đánh giá", "Bài viết", "Chủ đề bài viết",
+                            "Bài viết", "f0", "f1", "f2", "f3", "Nội dung", "Điểm đánh giá", "Chủ đề bài viết",
                             "Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)"
                         ]
                         st.rerun()
@@ -820,10 +1108,10 @@ elif menu == "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)
 
             if not chosen_curated_cols:
                 st.warning("⚠️ Bạn đã ẩn toàn bộ các cột! Vui lòng chọn ít nhất 1 cột bên trên.")
-                chosen_curated_cols = ["Nội dung"]
+                chosen_curated_cols = ["Bài viết", "Nội dung"]
 
             df_display = df_curated[chosen_curated_cols]
-            st.info(f"Đang hiển thị **{len(df_display)}** dòng và **{len(chosen_curated_cols)}** cột đã chọn. File Excel xuất ra sẽ chỉ có đúng các cột này!")
+            st.info(f"Đang hiển thị **{len(df_display)}** dòng (đã lọc độ dài {min_char_len}-{max_char_len} ký tự) và **{len(chosen_curated_cols)}** cột đã chọn. File Excel xuất ra sẽ chỉ có đúng các cột này!")
             st.dataframe(df_display.head(60), use_container_width=True, height=380)
 
             st.divider()
@@ -833,7 +1121,9 @@ elif menu == "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)
                 curated_xlsx = exporter.export_curated_excel(
                     filter_status=status_code,
                     filter_comment_type=type_code,
-                    columns=chosen_curated_cols
+                    columns=chosen_curated_cols,
+                    min_length=min_char_len,
+                    max_length=max_char_len
                 )
                 with open(curated_xlsx, "rb") as f:
                     st.download_button(
@@ -844,13 +1134,15 @@ elif menu == "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)
                         type="primary",
                         use_container_width=True
                     )
-                st.caption(f"✅ Đã fix size ô, wrap text và **chỉ xuất {len(chosen_curated_cols)} cột**: {', '.join(chosen_curated_cols)}.")
+                st.caption(f"✅ Đã fix size ô, wrap text, chuẩn hóa khoảng trắng và **chỉ xuất {len(chosen_curated_cols)} cột**: {', '.join(chosen_curated_cols)}.")
 
             with c_btn2:
                 curated_csv = exporter.export_curated_csv(
                     filter_status=status_code,
                     filter_comment_type=type_code,
-                    columns=chosen_curated_cols
+                    columns=chosen_curated_cols,
+                    min_length=min_char_len,
+                    max_length=max_char_len
                 )
                 with open(curated_csv, "rb") as f:
                     st.download_button(
@@ -871,7 +1163,9 @@ elif menu == "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)
             filter_status=status_code,
             filter_comment_type=type_code,
             include_links=include_links,
-            limit=None
+            limit=None,
+            min_length=min_char_len,
+            max_length=max_char_len
         )
 
         st.markdown("### 👁️ Xem trước bảng chi tiết đầy đủ & Tùy chọn Ẩn/Hiện cột")
@@ -899,7 +1193,9 @@ elif menu == "📥 Xuất dữ liệu Excel & CSV (Fix size / Tự tổng hợp)
                     filter_status=status_code,
                     filter_comment_type=type_code,
                     include_links=include_links,
-                    columns=chosen_detail_cols
+                    columns=chosen_detail_cols,
+                    min_length=min_char_len,
+                    max_length=max_char_len
                 )
                 with open(csv_path, "rb") as f:
                     st.download_button(

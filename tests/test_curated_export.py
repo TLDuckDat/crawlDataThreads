@@ -79,6 +79,10 @@ class TestCuratedExport(unittest.TestCase):
                 "Điểm đánh giá",
                 "Bài viết",
                 "Chủ đề bài viết",
+                "f0",
+                "f1",
+                "f2",
+                "f3",
                 "Tự đánh giá của bạn (Xấu luôn / Chưa rõ / Trong sạch)",
                 "Từ lóng mới bổ sung (nếu có)"
             ]
@@ -178,6 +182,167 @@ class TestCuratedExport(unittest.TestCase):
             self.assertEqual(list(df_read.columns), ["Nội dung", "Bài viết"])
             self.assertNotIn("Mã ID", df_read.columns)
             self.assertNotIn("Điểm đánh giá", df_read.columns)
+        finally:
+            db_manager.db_path = orig_db
+
+    def test_column_order_bai_viet_f0_f3_noi_dung(self):
+        """Verify that column sequence follows: Mã ID -> Bài viết -> f0 -> f1 -> f2 -> f3 -> Nội dung."""
+        orig_db = db_manager.db_path
+        db_manager.db_path = self.db_path
+        try:
+            df = self.db.get_curated_export_df(filter_status="all")
+            cols = list(df.columns)
+            self.assertEqual(cols[0], "Mã ID")
+            self.assertEqual(cols[1], "Bài viết")
+            self.assertEqual(cols[2], "f0")
+            self.assertEqual(cols[3], "f1")
+            self.assertEqual(cols[4], "f2")
+            self.assertEqual(cols[5], "f3")
+            self.assertEqual(cols[6], "Nội dung")
+            self.assertEqual(cols[7], "Điểm đánh giá")
+            self.assertEqual(cols[8], "Chủ đề bài viết")
+        finally:
+            db_manager.db_path = orig_db
+
+    def test_whitespace_splitting_in_curated_export(self):
+        """Verify that multiple spaces, tabs, and newlines are cleanly collapsed into single spaces."""
+        orig_db = db_manager.db_path
+        db_manager.db_path = self.db_path
+        try:
+            from src.database.models import CommentModel
+            messy_cmt = CommentModel(
+                id="cmt_messy_space",
+                post_id="post_curated_1",
+                post_url="https://www.threads.com/@drama/post/1",
+                comment_url="https://www.threads.com/@drama/post/1#cmt_messy",
+                author_username="space_user",
+                author_name="Space User",
+                author_profile_url="https://www.threads.com/@space_user",
+                content="  Câu này\n\n\n   có rất nhiều   khoảng trắng   và dòng thừa\t\t ",
+                posted_at="2026-09-22 12:00:00",
+                likes=1,
+                reply_to="",
+                is_reply=False,
+                f0="  f0 gốc\n\n   nhiều cách   ",
+                f1="",
+                f2="",
+                f3="",
+                is_toxic=False,
+                toxic_score=0.05,
+                severity_vi="Trong sạch",
+                review_status="clean",
+                review_status_vi="Trong sạch"
+            )
+            self.db.upsert_comment(messy_cmt)
+
+            df = self.db.get_curated_export_df(filter_status="all")
+            row = df[df["Mã ID"] == "cmt_messy_space"].iloc[0]
+            self.assertEqual(row["Nội dung"], "Câu này có rất nhiều khoảng trắng và dòng thừa")
+            self.assertEqual(row["f0"], "f0 gốc nhiều cách")
+
+            # Verify in Excel file as well
+            excel_path = self.exporter.export_curated_excel(filter_status="all")
+            wb = openpyxl.load_workbook(excel_path)
+            ws = wb.active
+            found_cell = False
+            for r in ws.iter_rows(min_row=2, values_only=True):
+                if r[0] == "cmt_messy_space":
+                    # Col 1: Bài viết, Col 2: f0, Col 6: Nội dung
+                    self.assertEqual(r[2], "f0 gốc nhiều cách")
+                    self.assertEqual(r[6], "Câu này có rất nhiều khoảng trắng và dòng thừa")
+                    found_cell = True
+                    break
+            self.assertTrue(found_cell)
+            wb.close()
+        finally:
+            db_manager.db_path = orig_db
+
+    def test_comment_length_threshold_filter(self):
+        """Verify that comments < 2 chars (e.g. 'ừ', 'ờ', '.') and > 300 chars are filtered out."""
+        orig_db = db_manager.db_path
+        db_manager.db_path = self.db_path
+        try:
+            from src.database.models import CommentModel
+            # 1. Too short (1 char: 'ừ')
+            c_short = CommentModel(
+                id="cmt_too_short",
+                post_id="post_curated_1",
+                post_url="https://www.threads.com/@drama/post/1",
+                comment_url="https://www.threads.com/@drama/post/1#short",
+                author_username="short_u",
+                author_name="Short",
+                author_profile_url="",
+                content="ừ",
+                posted_at="2026-09-22 12:00:00",
+                likes=0,
+                reply_to="",
+                is_reply=False
+            )
+            # 2. Too short with spaces
+            c_short_space = CommentModel(
+                id="cmt_short_space",
+                post_id="post_curated_1",
+                post_url="https://www.threads.com/@drama/post/1",
+                comment_url="https://www.threads.com/@drama/post/1#space",
+                author_username="short_u2",
+                author_name="Short 2",
+                author_profile_url="",
+                content="  ờ   ",
+                posted_at="2026-09-22 12:00:00",
+                likes=0,
+                reply_to="",
+                is_reply=False
+            )
+            # 3. Exactly 2 chars: "ok" (should be kept)
+            c_exact_2 = CommentModel(
+                id="cmt_exact_2",
+                post_id="post_curated_1",
+                post_url="https://www.threads.com/@drama/post/1",
+                comment_url="https://www.threads.com/@drama/post/1#ok",
+                author_username="ok_u",
+                author_name="OK",
+                author_profile_url="",
+                content="ok",
+                posted_at="2026-09-22 12:00:00",
+                likes=0,
+                reply_to="",
+                is_reply=False
+            )
+            # 4. Too long (> 300 chars)
+            c_too_long = CommentModel(
+                id="cmt_too_long",
+                post_id="post_curated_1",
+                post_url="https://www.threads.com/@drama/post/1",
+                comment_url="https://www.threads.com/@drama/post/1#long",
+                author_username="long_u",
+                author_name="Long",
+                author_profile_url="",
+                content="A" * 305,
+                posted_at="2026-09-22 12:00:00",
+                likes=0,
+                reply_to="",
+                is_reply=False
+            )
+            self.db.upsert_comment(c_short)
+            self.db.upsert_comment(c_short_space)
+            self.db.upsert_comment(c_exact_2)
+            self.db.upsert_comment(c_too_long)
+
+            # Query with default 2 to 300 filter
+            df = self.db.get_curated_export_df(filter_status="all", min_length=2, max_length=300)
+            ids = list(df["Mã ID"])
+            self.assertNotIn("cmt_too_short", ids)
+            self.assertNotIn("cmt_short_space", ids)
+            self.assertNotIn("cmt_too_long", ids)
+            self.assertIn("cmt_exact_2", ids)
+
+            # Also check get_comments_export_df
+            df_comm = self.db.get_comments_export_df(filter_status="all", include_links=True, min_length=2, max_length=300)
+            comm_ids = list(df_comm["Mã bình luận (Comment ID)"])
+            self.assertNotIn("cmt_too_short", comm_ids)
+            self.assertNotIn("cmt_short_space", comm_ids)
+            self.assertNotIn("cmt_too_long", comm_ids)
+            self.assertIn("cmt_exact_2", comm_ids)
         finally:
             db_manager.db_path = orig_db
 
