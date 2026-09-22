@@ -241,5 +241,104 @@ class TestCommentGenerations(unittest.TestCase):
         finally:
             db_manager.db_path = orig_db
 
+    def test_backfill_strictly_caps_at_f3_and_deletes_excess(self):
+        """Verify that backfill_comment_generations strictly keeps up to F3 and removes F4+."""
+        for i in range(6):
+            self.db.upsert_comment(CommentModel(
+                id=f"chain_{i}",
+                post_id="post_gen_1",
+                post_url="https://www.threads.net/@post_author/post/XYZ999",
+                author_username=f"user_{i}",
+                content=f"Nội dung phản hồi thứ {i}",
+                is_reply=(i > 0)
+            ))
+
+        self.db.backfill_comment_generations()
+        df = self.db.get_curated_export_df(filter_status="all")
+        remaining_ids = df["Mã ID"].tolist()
+
+        # Should only keep chain_0 (F0), chain_1 (F1), chain_2 (F2), chain_3 (F3)
+        self.assertIn("chain_0", remaining_ids)
+        self.assertIn("chain_1", remaining_ids)
+        self.assertIn("chain_2", remaining_ids)
+        self.assertIn("chain_3", remaining_ids)
+        self.assertNotIn("chain_4", remaining_ids)
+        self.assertNotIn("chain_5", remaining_ids)
+        self.assertEqual(len(remaining_ids), 4)
+
+    def test_purge_comments_beyond_f3(self):
+        """Verify purge_comments_beyond_f3 removes any reply_level > 3."""
+        self.db.upsert_comment(CommentModel(
+            id="c_f3", post_id="post_gen_1", post_url="url", content="F3 cmt", reply_level=3
+        ))
+        self.db.upsert_comment(CommentModel(
+            id="c_f4", post_id="post_gen_1", post_url="url", content="F4 cmt", reply_level=4
+        ))
+        self.db.upsert_comment(CommentModel(
+            id="c_f5", post_id="post_gen_1", post_url="url", content="F5 cmt", reply_level=5
+        ))
+
+        purged = self.db.purge_comments_beyond_f3()
+        self.assertEqual(purged, 2)
+
+        df = self.db.get_comments_for_cleanup_df()
+        ids = df["id"].tolist()
+        self.assertIn("c_f3", ids)
+        self.assertNotIn("c_f4", ids)
+        self.assertNotIn("c_f5", ids)
+
+    def test_cascade_delete_f2_deletes_f3(self):
+        """Verify that deleting an F2 comment automatically deletes all of its F3 replies."""
+        # Seed F0, F1, F2, F3
+        self.db.upsert_comment(CommentModel(
+            id="root_c", post_id="post_gen_1", post_url="url", content="F0 root", reply_level=0, comment_type_vi="Bình luận gốc"
+        ))
+        self.db.upsert_comment(CommentModel(
+            id="f1_c", post_id="post_gen_1", post_url="url", content="F1 reply", reply_level=1, f0="F0 root", f1="F1 reply", parent_comment_id="root_c"
+        ))
+        self.db.upsert_comment(CommentModel(
+            id="f2_c", post_id="post_gen_1", post_url="url", content="F2 target to delete", reply_level=2, f0="F0 root", f1="F1 reply", f2="F2 target to delete", parent_comment_id="f1_c"
+        ))
+        self.db.upsert_comment(CommentModel(
+            id="f3_child_c", post_id="post_gen_1", post_url="url", content="F3 child of F2", reply_level=3, f0="F0 root", f1="F1 reply", f2="F2 target to delete", f3="F3 child of F2", parent_comment_id="f2_c"
+        ))
+
+        # Delete F2 with cascade=True
+        deleted_count = self.db.delete_comments(["f2_c"], cascade=True)
+        self.assertEqual(deleted_count, 2)  # f2_c AND f3_child_c
+
+        df = self.db.get_comments_for_cleanup_df()
+        remaining_ids = df["id"].tolist()
+        self.assertIn("root_c", remaining_ids)
+        self.assertIn("f1_c", remaining_ids)
+        self.assertNotIn("f2_c", remaining_ids)
+        self.assertNotIn("f3_child_c", remaining_ids)
+
+    def test_cascade_delete_f1_deletes_f2_and_f3(self):
+        """Verify that deleting an F1 comment automatically deletes its F2 and F3 child replies."""
+        self.db.upsert_comment(CommentModel(
+            id="root_c2", post_id="post_gen_1", post_url="url", content="F0 root 2", reply_level=0
+        ))
+        self.db.upsert_comment(CommentModel(
+            id="f1_c2", post_id="post_gen_1", post_url="url", content="F1 reply 2", reply_level=1, f0="F0 root 2", f1="F1 reply 2", parent_comment_id="root_c2"
+        ))
+        self.db.upsert_comment(CommentModel(
+            id="f2_c2", post_id="post_gen_1", post_url="url", content="F2 reply 2", reply_level=2, f0="F0 root 2", f1="F1 reply 2", f2="F2 reply 2", parent_comment_id="f1_c2"
+        ))
+        self.db.upsert_comment(CommentModel(
+            id="f3_c2", post_id="post_gen_1", post_url="url", content="F3 reply 2", reply_level=3, f0="F0 root 2", f1="F1 reply 2", f2="F2 reply 2", f3="F3 reply 2", parent_comment_id="f2_c2"
+        ))
+
+        # Delete F1
+        deleted_count = self.db.delete_comments(["f1_c2"], cascade=True)
+        self.assertEqual(deleted_count, 3)  # f1_c2, f2_c2, f3_c2
+
+        df = self.db.get_comments_for_cleanup_df()
+        remaining_ids = df["id"].tolist()
+        self.assertIn("root_c2", remaining_ids)
+        self.assertNotIn("f1_c2", remaining_ids)
+        self.assertNotIn("f2_c2", remaining_ids)
+        self.assertNotIn("f3_c2", remaining_ids)
+
 if __name__ == "__main__":
     unittest.main()

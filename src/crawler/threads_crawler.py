@@ -196,8 +196,6 @@ class ThreadsCrawler:
 
                     seen_ids.add(comment_id)
                     seen_ids.add(content)
-                    new_items_in_round += 1
-                    scraped_comments += 1
 
                     has_down_connector = item.get("hasDownConnector", False)
 
@@ -232,11 +230,11 @@ class ThreadsCrawler:
                             f3 = current_f3
                             comment_type_vi = "Bình luận con (F3)"
                         else:
-                            f0 = current_f0
-                            f1 = current_f1
-                            f2 = current_f2
-                            f3 = current_f3
-                            comment_type_vi = f"Bình luận con (F{current_level})"
+                            # Level > 3: User strictly only wants up to F3!
+                            # Skip comments beyond F3
+                            if not has_down_connector:
+                                current_thread_open = False
+                            continue
 
                         scraped_child_comments += 1
                         if not has_down_connector:
@@ -280,6 +278,9 @@ class ThreadsCrawler:
                                 current_thread_open = True
                             else:
                                 current_thread_open = False
+
+                    new_items_in_round += 1
+                    scraped_comments += 1
 
                     # Run Toxic Analysis (Words + Slang + Emojis)
                     analysis = toxic_engine.analyze(content)

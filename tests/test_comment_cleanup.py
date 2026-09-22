@@ -139,5 +139,64 @@ class TestCommentCleanup(unittest.TestCase):
         self.assertEqual(len(df_export), 1)
         self.assertEqual(df_export.iloc[0]["Mã ID"], "c_normal_1")
 
+    def test_count_cleanup_comments(self):
+        """Test counting comments matching various cleanup filter criteria."""
+        total = self.db.count_cleanup_comments()
+        self.assertEqual(total, 4)
+
+        # Keyword filter
+        cnt_kw = self.db.count_cleanup_comments(search_kw="shopee")
+        self.assertEqual(cnt_kw, 1)
+
+        # Max length filter
+        cnt_short = self.db.count_cleanup_comments(max_length=2)
+        self.assertEqual(cnt_short, 1)
+
+        # Author filter
+        cnt_auth = self.db.count_cleanup_comments(author_username="spambot999")
+        self.assertEqual(cnt_auth, 1)
+
+        # Reply filter
+        cnt_reply = self.db.count_cleanup_comments(filter_comment_type="reply")
+        self.assertEqual(cnt_reply, 1)
+
+    def test_get_cleanup_comment_at_index(self):
+        """Test retrieving a single comment with full context for card view."""
+        item = self.db.get_cleanup_comment_at_index(index=0)
+        self.assertIsNotNone(item)
+        self.assertIn("content", item)
+        self.assertIn("author_username", item)
+        self.assertIn("post_content", item)
+        self.assertIn("matched_words_list", item)
+
+        # Filter by keyword
+        item_kw = self.db.get_cleanup_comment_at_index(index=0, search_kw="shopee")
+        self.assertIsNotNone(item_kw)
+        self.assertEqual(item_kw["id"], "c_spam_kw_1")
+        self.assertEqual(item_kw["post_content"], "Bài viết kiểm thử tính năng lọc xóa")
+
+    def test_single_comment_delete_workflow(self):
+        """Test 1-by-1 deletion: deleting one item leaves the others intact and shifts index."""
+        # Total before: 4
+        self.assertEqual(self.db.count_cleanup_comments(), 4)
+
+        # Get first item
+        first_item = self.db.get_cleanup_comment_at_index(index=0, order_by="oldest")
+        self.assertIsNotNone(first_item)
+        del_id = first_item["id"]
+
+        # Delete single comment
+        deleted = self.db.delete_comments([del_id])
+        self.assertEqual(deleted, 1)
+
+        # Total after: 3
+        self.assertEqual(self.db.count_cleanup_comments(), 3)
+
+        # New first item should not be the deleted one
+        new_first = self.db.get_cleanup_comment_at_index(index=0, order_by="oldest")
+        self.assertIsNotNone(new_first)
+        self.assertNotEqual(new_first["id"], del_id)
+
 if __name__ == "__main__":
     unittest.main()
+

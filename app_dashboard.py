@@ -763,10 +763,21 @@ elif menu == "⚡ Gán nhãn từng bình luận (Siêu tốc)":
                     st.toast("🟢 Đã lưu nhãn: TRONG SẠCH!")
                     advance_queue()
 
-            # Skip button
+            # Secondary Action Buttons: Delete & Skip
             st.write("")
-            c_sk1, c_sk2 = st.columns([4, 1])
+            c_sk1, c_sk2, c_sk3 = st.columns([2.6, 1.3, 1.1])
             with c_sk2:
+                if st.button("🗑️ Xóa khỏi CSDL", type="secondary", use_container_width=True, key=f"del_single_focus_{item['id']}", help="Xóa vĩnh viễn bình luận này khỏi CSDL (và tự động xóa toàn bộ phản hồi con trực thuộc nhánh của nó)"):
+                    del_cnt = db_manager.delete_comments([item["id"]], cascade=True)
+                    db_manager.backfill_comment_generations()
+                    if del_cnt > 1:
+                        st.toast(f"🗑️ Đã xóa bình luận này và {del_cnt - 1} bình luận con thuộc nhánh!", icon="🗑️")
+                    else:
+                        st.toast(f"🗑️ Đã xóa vĩnh viễn bình luận của @{author_user} khỏi CSDL!", icon="🗑️")
+                    if cur_idx >= total_matching - 1:
+                        st.session_state["focus_current_idx"] = max(0, total_matching - 2)
+                    st.rerun()
+            with c_sk3:
                 if st.button("⏭️ Bỏ qua câu này", use_container_width=True, key=f"skip_btn_{item['id']}"):
                     st.session_state["focus_current_idx"] = min(total_matching - 1, cur_idx + 1)
                     st.rerun()
@@ -816,7 +827,7 @@ elif menu == "🧹 Lọc & Xóa bình luận (Làm sạch dữ liệu)":
                 key="input_clean_author"
             )
 
-        f_r2_c1, f_r2_c2, f_r2_c3 = st.columns(3)
+        f_r2_c1, f_r2_c2, f_r2_c3, f_r2_c4 = st.columns([1.5, 1.5, 1.5, 1.5])
         with f_r2_c1:
             filter_status = st.selectbox(
                 "Đánh giá phân loại:",
@@ -843,25 +854,240 @@ elif menu == "🧹 Lọc & Xóa bình luận (Làm sạch dữ liệu)":
                 "Chỉ bình luận con (Phản hồi)": "reply"
             }
         with f_r2_c3:
-            enable_len_filter = st.checkbox("Lọc theo độ dài ký tự tối đa", value=False, key="cb_len_filter")
-            max_len = st.number_input("Độ dài nội dung tối đa (ký tự):", min_value=1, max_value=500, value=3, disabled=not enable_len_filter, key="num_max_len") if enable_len_filter else None
+            order_label_clean = st.selectbox(
+                "Thứ tự hiển thị:",
+                ["Mới nhất trước", "Cũ nhất trước", "Điểm Toxic cao -> thấp", "Nội dung ngắn nhất trước"],
+                index=0,
+                key="sel_clean_order"
+            )
+            ord_map_clean = {
+                "Mới nhất trước": "newest",
+                "Cũ nhất trước": "oldest",
+                "Điểm Toxic cao -> thấp": "toxic_score_desc",
+                "Nội dung ngắn nhất trước": "shortest_first"
+            }
+        with f_r2_c4:
+            enable_len_filter = st.checkbox("Lọc theo độ dài tối đa", value=False, key="cb_len_filter")
+            max_len = st.number_input("Tối đa ký tự:", min_value=1, max_value=500, value=3, disabled=not enable_len_filter, key="num_max_len") if enable_len_filter else None
 
-    # Fetch data
-    df_raw = db_manager.get_comments_for_cleanup_df(
+    # Total matching comments count
+    total_clean_matching = db_manager.count_cleanup_comments(
         search_kw=search_kw,
         author_username=author_kw,
         max_length=max_len,
         filter_status=status_map[filter_status],
-        filter_comment_type=ctype_map[filter_ctype],
-        limit=1000
+        filter_comment_type=ctype_map[filter_ctype]
     )
 
-    total_found = len(df_raw)
-    st.markdown(f"### 📋 Danh sách bình luận tìm thấy: **{total_found}** bình luận")
+    st.markdown(f"### 📋 Danh sách bình luận tìm thấy: **{total_clean_matching:,}** bình luận")
 
-    if df_raw.empty:
+    # Mode Selector: Single-Comment Focus Card vs Batch Data Editor Table
+    clean_view_mode = st.radio(
+        "Chế độ hiển thị & làm sạch:",
+        [
+            "⚡ Thẻ duyệt & Xóa từng bình luận (Giống giao diện Gán nhãn - Khuyên dùng)",
+            "📋 Bảng danh sách hàng loạt (Data Editor)"
+        ],
+        horizontal=True,
+        key="clean_view_mode_choice"
+    )
+
+    if total_clean_matching == 0:
         st.info("ℹ️ Không tìm thấy bình luận nào khớp với bộ lọc hiện tại.")
+    elif clean_view_mode == "⚡ Thẻ duyệt & Xóa từng bình luận (Giống giao diện Gán nhãn - Khuyên dùng)":
+        # 1. Reset index if filter signature changes
+        clean_sig = f"{search_kw}_{author_kw}_{filter_status}_{filter_ctype}_{max_len}_{order_label_clean}"
+        if st.session_state.get("last_clean_sig") != clean_sig:
+            st.session_state["last_clean_sig"] = clean_sig
+            st.session_state["clean_focus_idx"] = 0
+
+        if "clean_focus_idx" not in st.session_state:
+            st.session_state["clean_focus_idx"] = 0
+        st.session_state["clean_focus_idx"] = max(0, min(st.session_state["clean_focus_idx"], total_clean_matching - 1))
+        cur_clean_idx = st.session_state["clean_focus_idx"]
+
+        # 2. Navigation & Auto-advance Bar
+        c_cnav1, c_cnav2, c_cnav3, c_cnav4, c_cnav5, c_cnav6 = st.columns([1, 1.2, 2.5, 1.2, 1, 2.4])
+
+        with c_cnav1:
+            if st.button("⏮️ Đầu", key="btn_c_first", use_container_width=True, disabled=(cur_clean_idx == 0)):
+                st.session_state["clean_focus_idx"] = 0
+                st.rerun()
+
+        with c_cnav2:
+            if st.button("⬅️ Trước", key="btn_c_prev", use_container_width=True, disabled=(cur_clean_idx == 0)):
+                st.session_state["clean_focus_idx"] = max(0, cur_clean_idx - 1)
+                st.rerun()
+
+        with c_cnav3:
+            jump_clean = st.number_input(
+                f"Đang xem câu: (1 - {total_clean_matching:,})",
+                min_value=1,
+                max_value=total_clean_matching,
+                value=cur_clean_idx + 1,
+                step=1,
+                label_visibility="collapsed",
+                key=f"clean_jump_{cur_clean_idx}_{total_clean_matching}"
+            )
+            if jump_clean - 1 != cur_clean_idx:
+                st.session_state["clean_focus_idx"] = jump_clean - 1
+                st.rerun()
+
+        with c_cnav4:
+            if st.button("➡️ Sau", key="btn_c_next", use_container_width=True, disabled=(cur_clean_idx >= total_clean_matching - 1)):
+                st.session_state["clean_focus_idx"] = min(total_clean_matching - 1, cur_clean_idx + 1)
+                st.rerun()
+
+        with c_cnav5:
+            if st.button("⏭️ Cuối", key="btn_c_last", use_container_width=True, disabled=(cur_clean_idx >= total_clean_matching - 1)):
+                st.session_state["clean_focus_idx"] = total_clean_matching - 1
+                st.rerun()
+
+        with c_cnav6:
+            auto_advance_clean = st.checkbox(
+                "⚡ Tự động chuyển câu kế tiếp khi xóa",
+                value=True,
+                key="auto_advance_clean_cb",
+                help="Khi bấm Xóa, hệ thống sẽ xóa bình luận này và tự động đưa câu tiếp theo lên màn hình ngay lập tức."
+            )
+
+        # 3. Fetch Single Item for Card View
+        c_item = db_manager.get_cleanup_comment_at_index(
+            index=cur_clean_idx,
+            search_kw=search_kw,
+            author_username=author_kw,
+            max_length=max_len,
+            filter_status=status_map[filter_status],
+            filter_comment_type=ctype_map[filter_ctype],
+            order_by=ord_map_clean[order_label_clean]
+        )
+
+        if c_item:
+            c_text = c_item.get("content", "")
+            live_analysis = toxic_engine.analyze(c_text)
+            combined_matched_words = list(set(c_item.get("matched_words_list", []) + live_analysis.matched_words))
+            combined_matched_emojis = list(set(c_item.get("matched_emojis_list", []) + live_analysis.matched_emojis))
+
+            sys_score = round(max(c_item.get("toxic_score", 0.0), live_analysis.score), 2)
+            sys_severity = live_analysis.severity_vi if live_analysis.is_toxic else c_item.get("severity_vi", "Trong sạch")
+            is_sys_toxic = live_analysis.is_toxic or c_item.get("is_toxic", False) or sys_score >= 0.5
+            is_sys_ambiguous = not is_sys_toxic and (live_analysis.review_status == "ambiguous" or (0.15 <= sys_score < 0.5))
+
+            accent_color = "#EF4444" if is_sys_toxic else ("#F59E0B" if is_sys_ambiguous else "#10B981")
+
+            author_user = c_item.get("author_username") or "threads_user"
+            author_name = c_item.get("author_name") or author_user
+            author_url = c_item.get("author_profile_url") or f"https://www.threads.net/@{author_user}"
+            is_reply = c_item.get("is_reply", 0)
+            reply_to = c_item.get("reply_to") or ""
+            c_type_label = f"↳ Phản hồi @{reply_to}" if (is_reply and reply_to) else ("↳ Bình luận con" if is_reply else "💬 Bình luận gốc")
+            likes_count = c_item.get("likes", 0)
+
+            detected_label = f" [Phát hiện: {', '.join(combined_matched_words[:3])}]" if combined_matched_words else ""
+            if is_sys_toxic:
+                sys_badge_html = f"<span class='toxic-badge'>⚠️ VI PHẠM ({sys_score} - {sys_severity}){detected_label}</span>"
+            elif is_sys_ambiguous:
+                sys_badge_html = f"<span style='background:#FEF3C7; color:#92400E; padding:4px 10px; border-radius:6px; font-weight:600; font-size:0.85rem;'>🟡 NGHI NGỜ ({sys_score}){detected_label}</span>"
+            else:
+                sys_badge_html = f"<span class='clean-badge'>✅ Trong sạch ({sys_score})</span>"
+
+            # 4. Render Main Clean Focus Card
+            with st.container(border=True):
+                st.html(f"<div style='height:4px; background:{accent_color}; border-radius:2px; margin-bottom:12px;'></div>")
+                chdr1, chdr2 = st.columns([3, 2])
+                with chdr1:
+                    st.html(
+                        f"<div style='font-size:1.05rem; line-height:1.6;'>"
+                        f"<b><a href='{author_url}' target='_blank' style='color:#0F172A; text-decoration:none;'>@{author_user}</a></b> "
+                        f"<span style='color:#64748B; font-size:0.92rem;'>({author_name})</span> &nbsp; "
+                        f"<span style='background:#E0E7FF; color:#3730A3; padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600;'>{c_type_label}</span> &nbsp; "
+                        f"<span style='background:#F1F5F9; color:#475569; padding:2px 8px; border-radius:10px; font-size:12px;'>❤️ {likes_count} thích</span> &nbsp; "
+                        f"<span style='background:#F8FAFC; color:#64748B; padding:2px 8px; border-radius:10px; font-size:12px;'>📏 {len(c_text)} ký tự</span>"
+                        f"</div>"
+                    )
+                with chdr2:
+                    st.html(f"<div style='text-align:right; font-size:0.95rem; line-height:1.6;'>{sys_badge_html}</div>")
+
+                # Full-length, clear text content with highlighted toxic tokens
+                highlighted_text = highlight_comment_text(c_text, combined_matched_words + combined_matched_emojis)
+                st.html(f"<div class='comment-large-text'>{highlighted_text}</div>")
+
+            # 5. Context Quote Boxes
+            post_content = c_item.get("post_content") or ""
+            post_categories = c_item.get("post_categories_list") or []
+            if post_content:
+                with st.expander("📖 Xem bài viết gốc liên quan (Ngữ cảnh)", expanded=False):
+                    post_author = c_item.get("post_author") or ""
+                    post_link = c_item.get("post_url") or ""
+                    post_link_html = f"· <a href='{post_link}' target='_blank'>Xem link gốc</a>" if post_link else ""
+                    post_cats_str = ", ".join(post_categories) if post_categories else "Chung"
+                    st.html(
+                        f"<div class='context-quote'>"
+                        f"<b>Tác giả bài viết:</b> @{post_author} {post_link_html}<br>"
+                        f"<b>Chủ đề:</b> {post_cats_str}<br>"
+                        f"<b>Nội dung bài gốc:</b> {html.escape(post_content)}"
+                        f"</div>"
+                    )
+
+            # Reply Tree
+            f0_text = c_item.get("f0") or ""
+            f1_text = c_item.get("f1") or ""
+            f2_text = c_item.get("f2") or ""
+            f3_text = c_item.get("f3") or ""
+            r_level = c_item.get("reply_level") or 0
+            if f0_text or f1_text:
+                with st.expander(f"🌳 Chuỗi phản hồi phân cấp (Thế hệ: F{r_level})", expanded=False):
+                    tree_html = "<div class='context-quote' style='border-left-color: #6366F1; background: #EEF2FF;'>"
+                    if f0_text:
+                        tree_html += f"<span style='color:#4338CA; font-weight:bold;'>[F0 - Bình luận gốc]:</span> {html.escape(f0_text)}<br><br>"
+                    if f1_text:
+                        tree_html += f"<span style='color:#4338CA; font-weight:bold;'>[F1 - Reply cấp 1]:</span> {html.escape(f1_text)}<br><br>"
+                    if f2_text:
+                        tree_html += f"<span style='color:#4338CA; font-weight:bold;'>[F2 - Reply cấp 2]:</span> {html.escape(f2_text)}<br><br>"
+                    if f3_text:
+                        tree_html += f"<span style='color:#4338CA; font-weight:bold;'>[F3 - Reply cấp 3]:</span> {html.escape(f3_text)}<br>"
+                    tree_html += "</div>"
+                    st.html(tree_html)
+
+            # 6. Action Buttons for Single Comment Cleanup
+            st.markdown("#### ⚡ Thao tác xử lý bình luận này:")
+            col_act1, col_act2, col_act3 = st.columns([2.4, 1.8, 2.2])
+
+            with col_act1:
+                if st.button("🗑️ XÓA BÌNH LUẬN NÀY (Xóa vĩnh viễn)", type="primary", use_container_width=True, key=f"btn_clean_del_{c_item['id']}", help="Xóa bình luận này khỏi CSDL (và tự động xóa toàn bộ phản hồi con trực thuộc nhánh nếu có)"):
+                    del_cnt = db_manager.delete_comments([c_item["id"]], cascade=True)
+                    db_manager.backfill_comment_generations()
+                    if del_cnt > 1:
+                        st.toast(f"🗑️ Đã xóa bình luận này và {del_cnt - 1} bình luận con thuộc nhánh!", icon="🗑️")
+                    else:
+                        st.toast(f"🗑️ Đã xóa bình luận của @{author_user} khỏi CSDL!", icon="🗑️")
+                    if cur_clean_idx >= total_clean_matching - 1:
+                        st.session_state["clean_focus_idx"] = max(0, total_clean_matching - 2)
+                    st.rerun()
+
+            with col_act2:
+                if st.button("➡️ Bỏ qua & Giữ lại (Sang câu tiếp)", use_container_width=True, key=f"btn_clean_skip_{c_item['id']}"):
+                    st.session_state["clean_focus_idx"] = min(total_clean_matching - 1, cur_clean_idx + 1)
+                    st.rerun()
+
+            with col_act3:
+                if st.button(f"🚫 Xóa TẤT CẢ của @{author_user}", use_container_width=True, key=f"btn_clean_del_author_{c_item['id']}", help=f"Xóa vĩnh viễn toàn bộ các bình luận được gửi bởi @{author_user}"):
+                    del_auth_n = db_manager.delete_comments_by_filter(author_username=author_user)
+                    db_manager.backfill_comment_generations()
+                    st.toast(f"🗑️ Đã xóa toàn bộ {del_auth_n} bình luận của @{author_user}!", icon="🗑️")
+                    st.rerun()
+
     else:
+        # BATCH DATA EDITOR TABLE MODE
+        df_raw = db_manager.get_comments_for_cleanup_df(
+            search_kw=search_kw,
+            author_username=author_kw,
+            max_length=max_len,
+            filter_status=status_map[filter_status],
+            filter_comment_type=ctype_map[filter_ctype],
+            limit=1000
+        )
+
         # Prepare editable DataFrame with checkbox
         df_editor_input = df_raw.copy()
         df_editor_input.insert(0, "Xóa", False)
@@ -969,6 +1195,14 @@ elif menu == "🧹 Lọc & Xóa bình luận (Làm sạch dữ liệu)":
                         st.success(f"Đã xóa {n} bình luận của @{author_kw}!")
                         time.sleep(1)
                         st.rerun()
+
+                confirm_f3 = st.checkbox("Xác nhận quét & xóa các bình luận vượt quá cấp F3 (F4, F5...)", key="cb_conf_f3")
+                if st.button("🛡️ Giới hạn độ sâu: Xóa bình luận vượt quá F3", disabled=not confirm_f3, use_container_width=True):
+                    n = db_manager.purge_comments_beyond_f3()
+                    db_manager.backfill_comment_generations()
+                    st.success(f"Đã quét và dọn dẹp {n} bình luận vượt quá cấp F3!")
+                    time.sleep(1)
+                    st.rerun()
 
     # Link to Export
     st.markdown("---")

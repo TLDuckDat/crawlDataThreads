@@ -1087,6 +1087,7 @@ class DatabaseManager:
                 comments_by_post[c["post_id"]].append(dict(c))
 
             updates = []
+            excess_comment_ids = []
             for post_id, c_list in comments_by_post.items():
                 post_author = post_authors.get(post_id, "")
                 current_f0 = ""
@@ -1166,11 +1167,9 @@ class DatabaseManager:
                             f3_val = current_f3
                             cmt_type = "Bình luận con (F3)"
                         else:
-                            f0_val = current_f0
-                            f1_val = current_f1
-                            f2_val = current_f2
-                            f3_val = current_f3
-                            cmt_type = f"Bình luận con (F{level})"
+                            # User strictly only wants up to F3: Purge comments beyond F3
+                            excess_comment_ids.append(c_id)
+                            continue
 
                         updates.append((
                             f0_val,
@@ -1182,6 +1181,15 @@ class DatabaseManager:
                             cmt_type,
                             c_id
                         ))
+
+            if excess_comment_ids:
+                batch_size = 500
+                for i in range(0, len(excess_comment_ids), batch_size):
+                    batch = excess_comment_ids[i:i + batch_size]
+                    placeholders = ",".join(["?"] * len(batch))
+                    cursor.execute(f"DELETE FROM comments WHERE id IN ({placeholders})", batch)
+                conn.commit()
+                logger.info(f"Purged {len(excess_comment_ids)} excess comments beyond F3 during backfill.")
 
             if updates:
                 cursor.executemany("""
@@ -1196,9 +1204,32 @@ class DatabaseManager:
                     WHERE id = ?
                 """, updates)
                 conn.commit()
-                logger.info(f"Backfilled generations (f0, f1, f2, f3) for {len(updates)} comments.")
+                logger.info(f"Backfilled generations (f0, f1, f2, f3) for {len(updates)} comments (strictly capped at F3).")
 
             return len(updates)
+
+    def purge_comments_beyond_f3(self) -> int:
+        """
+        Delete all comments beyond F3 (reply_level > 3) to enforce maximum depth of F3.
+        Returns the number of deleted records.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM comments 
+                WHERE reply_level > 3 
+                   OR comment_type_vi LIKE '%(F4%'
+                   OR comment_type_vi LIKE '%(F5%'
+                   OR comment_type_vi LIKE '%(F6%'
+                   OR comment_type_vi LIKE '%(F7%'
+                   OR comment_type_vi LIKE '%(F8%'
+                   OR comment_type_vi LIKE '%(F9%'
+                   OR comment_type_vi LIKE '%(F1%'
+            """)
+            count = cursor.rowcount
+            conn.commit()
+        logger.info(f"Purged {count} comments beyond F3 from database.")
+        return count
 
 
     def purge_foreign_language_records(self) -> Dict[str, int]:
@@ -1258,29 +1289,81 @@ class DatabaseManager:
             "cleaned_comments": cleaned_comments
         }
 
-    def delete_comments(self, comment_ids: List[str]) -> int:
+    def delete_comments(self, comment_ids: List[str], cascade: bool = True) -> int:
         """
         Delete specific comments by ID list.
-        Returns the number of deleted records.
+        If cascade=True (default), also finds and deletes all dependent child comments:
+        - When an F2 comment is deleted, all of its F3 reply comments are automatically deleted.
+        - When an F1 comment is deleted, its F2 and F3 replies are automatically deleted.
+        - When an F0 (root) comment is deleted, all replies under it (F1, F2, F3) are automatically deleted.
+        Returns the total number of deleted records.
         """
         if not comment_ids:
             return 0
-        valid_ids = [str(cid).strip() for cid in comment_ids if cid and str(cid).strip()]
+        valid_ids = list(set(str(cid).strip() for cid in comment_ids if cid and str(cid).strip()))
         if not valid_ids:
             return 0
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            all_ids_to_delete = set(valid_ids)
+
+            if cascade:
+                placeholders = ",".join(["?"] * len(valid_ids))
+                rows = cursor.execute(
+                    f"SELECT id, post_id, content, reply_level FROM comments WHERE id IN ({placeholders})",
+                    valid_ids
+                ).fetchall()
+
+                for r in rows:
+                    cid = r["id"]
+                    post_id = r["post_id"]
+                    content = r["content"]
+                    r_level = r["reply_level"] or 0
+
+                    # 1. Direct children via parent_comment_id
+                    child_rows = cursor.execute(
+                        "SELECT id FROM comments WHERE parent_comment_id = ?",
+                        (cid,)
+                    ).fetchall()
+                    for ch in child_rows:
+                        all_ids_to_delete.add(ch["id"])
+
+                    # 2. Hierarchy children matching in same post
+                    if content:
+                        if r_level == 2:  # F2 -> delete all F3 replies
+                            f3_rows = cursor.execute(
+                                "SELECT id FROM comments WHERE post_id = ? AND f2 = ? AND reply_level = 3",
+                                (post_id, content)
+                            ).fetchall()
+                            for f3_r in f3_rows:
+                                all_ids_to_delete.add(f3_r["id"])
+                        elif r_level == 1:  # F1 -> delete F2 & F3 replies
+                            f_rows = cursor.execute(
+                                "SELECT id FROM comments WHERE post_id = ? AND f1 = ? AND reply_level >= 2",
+                                (post_id, content)
+                            ).fetchall()
+                            for f_r in f_rows:
+                                all_ids_to_delete.add(f_r["id"])
+                        elif r_level == 0:  # F0 -> delete all replies
+                            f_rows = cursor.execute(
+                                "SELECT id FROM comments WHERE post_id = ? AND f0 = ? AND reply_level >= 1",
+                                (post_id, content)
+                            ).fetchall()
+                            for f_r in f_rows:
+                                all_ids_to_delete.add(f_r["id"])
+
+            final_ids = list(all_ids_to_delete)
             total_deleted = 0
             batch_size = 500
-            for i in range(0, len(valid_ids), batch_size):
-                batch = valid_ids[i:i + batch_size]
+            for i in range(0, len(final_ids), batch_size):
+                batch = final_ids[i:i + batch_size]
                 placeholders = ",".join(["?"] * len(batch))
                 cursor.execute(f"DELETE FROM comments WHERE id IN ({placeholders})", batch)
                 total_deleted += cursor.rowcount
             conn.commit()
 
-        logger.info(f"User deleted {total_deleted} comments successfully.")
+        logger.info(f"User deleted {total_deleted} comments successfully (cascade={cascade}).")
         return total_deleted
 
     def delete_comments_by_filter(
@@ -1397,6 +1480,135 @@ class DatabaseManager:
 
             df = pd.read_sql_query(query, conn, params=params)
             return df
+
+    def count_cleanup_comments(
+        self,
+        search_kw: str = "",
+        author_username: str = "",
+        max_length: Optional[int] = None,
+        filter_status: str = "all",
+        filter_comment_type: str = "all"
+    ) -> int:
+        """Count comments matching cleanup filter criteria."""
+        with self.get_connection() as conn:
+            query = "SELECT COUNT(*) FROM comments WHERE 1=1"
+            params = []
+
+            if search_kw:
+                query += " AND (content LIKE ? OR matched_words LIKE ?)"
+                kw_wildcard = f"%{search_kw.strip()}%"
+                params.extend([kw_wildcard, kw_wildcard])
+
+            if author_username:
+                clean_user = author_username.strip().lstrip("@")
+                query += " AND author_username = ?"
+                params.append(clean_user)
+
+            if max_length is not None and max_length > 0:
+                query += " AND LENGTH(TRIM(content)) <= ?"
+                params.append(int(max_length))
+
+            if filter_status == "bad":
+                query += " AND (review_status = 'bad' OR toxic_score >= 0.5)"
+            elif filter_status == "ambiguous":
+                query += " AND (review_status = 'ambiguous' OR (toxic_score >= 0.15 AND toxic_score < 0.5))"
+            elif filter_status == "clean":
+                query += " AND (review_status = 'clean' OR toxic_score < 0.15)"
+
+            if filter_comment_type == "root":
+                query += " AND (is_reply = 0 OR is_reply IS NULL)"
+            elif filter_comment_type == "reply":
+                query += " AND is_reply = 1"
+
+            cursor = conn.cursor()
+            return cursor.execute(query, params).fetchone()[0]
+
+    def get_cleanup_comment_at_index(
+        self,
+        index: int,
+        search_kw: str = "",
+        author_username: str = "",
+        max_length: Optional[int] = None,
+        filter_status: str = "all",
+        filter_comment_type: str = "all",
+        order_by: str = "newest"
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch single comment with full context for single-comment cleanup card."""
+        with self.get_connection() as conn:
+            query = """
+                SELECT 
+                    c.id, c.content, c.author_username, c.author_name, c.author_profile_url,
+                    c.posted_at, c.likes, c.reply_to, c.is_reply, c.comment_type_vi,
+                    c.f0, c.f1, c.f2, c.f3, c.reply_level,
+                    c.comment_url, c.post_url, c.post_id,
+                    c.is_toxic, c.toxic_score, c.severity_vi, c.review_status, c.review_status_vi,
+                    c.has_emoji_slang, c.matched_words, c.matched_emojis, c.categories,
+                    c.user_review, c.user_review_vi, c.user_score, c.user_keywords,
+                    c.is_user_reviewed, c.user_reviewed_at, c.scraped_at,
+                    p.content as post_content, p.categories as post_categories, p.author_username as post_author
+                FROM comments c
+                LEFT JOIN posts p ON c.post_id = p.id
+                WHERE 1=1
+            """
+            params = []
+
+            if search_kw:
+                query += " AND (c.content LIKE ? OR c.matched_words LIKE ?)"
+                kw_wildcard = f"%{search_kw.strip()}%"
+                params.extend([kw_wildcard, kw_wildcard])
+
+            if author_username:
+                clean_user = author_username.strip().lstrip("@")
+                query += " AND c.author_username = ?"
+                params.append(clean_user)
+
+            if max_length is not None and max_length > 0:
+                query += " AND LENGTH(TRIM(c.content)) <= ?"
+                params.append(int(max_length))
+
+            if filter_status == "bad":
+                query += " AND (c.review_status = 'bad' OR c.toxic_score >= 0.5)"
+            elif filter_status == "ambiguous":
+                query += " AND (c.review_status = 'ambiguous' OR (c.toxic_score >= 0.15 AND c.toxic_score < 0.5))"
+            elif filter_status == "clean":
+                query += " AND (c.review_status = 'clean' OR c.toxic_score < 0.15)"
+
+            if filter_comment_type == "root":
+                query += " AND (c.is_reply = 0 OR c.is_reply IS NULL)"
+            elif filter_comment_type == "reply":
+                query += " AND c.is_reply = 1"
+
+            if order_by == "oldest":
+                query += " ORDER BY c.scraped_at ASC"
+            elif order_by == "toxic_score_desc":
+                query += " ORDER BY c.toxic_score DESC, c.scraped_at DESC"
+            elif order_by == "shortest_first":
+                query += " ORDER BY LENGTH(TRIM(c.content)) ASC, c.scraped_at DESC"
+            else:  # newest
+                query += " ORDER BY c.scraped_at DESC"
+
+            query += f" LIMIT 1 OFFSET {max(0, int(index))}"
+            cursor = conn.cursor()
+            row = cursor.execute(query, params).fetchone()
+            if not row:
+                return None
+
+            item = dict(row)
+            def safe_json(val):
+                if not val:
+                    return []
+                try:
+                    res = json.loads(val)
+                    return res if isinstance(res, list) else [res]
+                except Exception:
+                    return [val] if val else []
+
+            item["matched_words_list"] = safe_json(item.get("matched_words"))
+            item["matched_emojis_list"] = safe_json(item.get("matched_emojis"))
+            item["categories_list"] = safe_json(item.get("categories"))
+            item["user_keywords_list"] = safe_json(item.get("user_keywords"))
+            item["post_categories_list"] = safe_json(item.get("post_categories"))
+            return item
 
     def clear_all_data(self) -> Dict[str, int]:
         """
