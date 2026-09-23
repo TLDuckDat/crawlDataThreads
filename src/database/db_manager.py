@@ -1,21 +1,21 @@
 import sqlite3
 import json
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union, Tuple
 import pandas as pd
 from datetime import datetime
 from contextlib import contextmanager
 
 from config.settings import DB_PATH
 from src.database.models import PostModel, CommentModel, CrawlSessionModel
-from src.detector.text_normalizer import is_valid_viet_eng_content, clean_to_viet_eng
+from src.detector.text_normalizer import is_valid_viet_eng_content, clean_to_viet_eng, clean_ui_artifacts
 from src.utils.logger import logger
 
 class DatabaseManager:
     """Manages SQLite storage, indexing, and categorized comment exports for Threads toxic data."""
 
-    def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = db_path or DB_PATH
+    def __init__(self, db_path: Optional[Union[Path, str]] = None):
+        self.db_path = Path(db_path) if db_path else DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_db()
 
@@ -356,6 +356,69 @@ class DatabaseManager:
                 "recent_sessions": [dict(s) for s in sessions]
             }
 
+    def get_existing_comment_hashes(self) -> tuple[set, set]:
+        """
+        Fast retrieval of existing comment IDs and normalized contents from database.
+        Returns (set_of_ids, set_of_normalized_contents).
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute("SELECT id, content FROM comments").fetchall()
+            ids = {r[0] for r in rows if r[0]}
+            contents = {" ".join(str(r[1]).split()).lower() for r in rows if r[1]}
+            return ids, contents
+
+    def get_existing_post_hashes(self) -> tuple[set, set, set]:
+        """
+        Fast retrieval of existing post IDs, URLs, and normalized contents.
+        Returns (set_of_ids, set_of_urls, set_of_normalized_contents).
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute("SELECT id, url, content FROM posts").fetchall()
+            ids = {r[0] for r in rows if r[0]}
+            urls = {r[1].strip() for r in rows if r[1]}
+            contents = {" ".join(str(r[2]).split()).lower() for r in rows if r[2]}
+            return ids, urls, contents
+
+    def comment_exists(self, comment_id: str = "", content: str = "") -> bool:
+        """Check if a comment already exists by ID or exact/normalized content."""
+        if not comment_id and not content:
+            return False
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if comment_id:
+                res = cursor.execute("SELECT 1 FROM comments WHERE id = ? LIMIT 1", (comment_id,)).fetchone()
+                if res:
+                    return True
+            if content:
+                norm = " ".join(str(content).split()).lower()
+                res = cursor.execute("SELECT 1 FROM comments WHERE LOWER(TRIM(content)) = ? LIMIT 1", (norm,)).fetchone()
+                if res:
+                    return True
+            return False
+
+    def post_exists(self, post_id: str = "", url: str = "", content: str = "") -> bool:
+        """Check if a post already exists by ID, URL, or content."""
+        if not post_id and not url and not content:
+            return False
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if post_id:
+                res = cursor.execute("SELECT 1 FROM posts WHERE id = ? LIMIT 1", (post_id,)).fetchone()
+                if res:
+                    return True
+            if url:
+                res = cursor.execute("SELECT 1 FROM posts WHERE url = ? LIMIT 1", (url.strip(),)).fetchone()
+                if res:
+                    return True
+            if content:
+                norm = " ".join(str(content).split()).lower()
+                res = cursor.execute("SELECT 1 FROM posts WHERE LOWER(TRIM(content)) = ? LIMIT 1", (norm,)).fetchone()
+                if res:
+                    return True
+            return False
+
     def get_comments_df(self, toxic_only: bool = False, review_status: Optional[str] = None, limit: Optional[int] = None) -> pd.DataFrame:
         """Fetch comments into a pandas DataFrame with review_status filter. limit=None means unlimited."""
         with self.get_connection() as conn:
@@ -390,10 +453,10 @@ class DatabaseManager:
             df = pd.read_sql_query(query, conn, params=params)
             return df
 
-    def get_detailed_export_df(self, table_type: str = "comments", toxic_only: bool = False, limit: Optional[int] = None) -> pd.DataFrame:
+    def get_detailed_export_df(self, table_type: str = "comments", toxic_only: bool = False, limit: Optional[int] = None, deduplicate: bool = True) -> pd.DataFrame:
         """Backward-compatible helper calling get_comments_export_df with full links."""
         filter_status = "toxic_only" if toxic_only else "all"
-        return self.get_comments_export_df(filter_status=filter_status, include_links=True, limit=limit)
+        return self.get_comments_export_df(filter_status=filter_status, include_links=True, limit=limit, deduplicate=deduplicate)
 
     def get_comments_export_df(
         self,
@@ -403,7 +466,8 @@ class DatabaseManager:
         limit: Optional[int] = None,
         viet_eng_only: bool = True,
         min_length: Optional[int] = 2,
-        max_length: Optional[int] = 300
+        max_length: Optional[int] = 300,
+        deduplicate: bool = True
     ) -> pd.DataFrame:
         """
         Query comments specifically for focused export:
@@ -421,6 +485,7 @@ class DatabaseManager:
         - limit: None hoặc 0 để lấy toàn bộ dữ liệu không giới hạn.
         - viet_eng_only: Lọc bỏ tiếng Trung, Nhật, Hàn... và làm sạch ký tự.
         - min_length / max_length: Lọc bỏ bình luận quá ngắn (< 2) và quá dài (> 300).
+        - deduplicate: Loại bỏ bình luận trùng lặp nội dung khi xuất.
         """
         with self.get_connection() as conn:
             query = "SELECT * FROM comments WHERE 1=1"
@@ -464,6 +529,17 @@ class DatabaseManager:
                         return False
                     return True
                 df = df[df["content"].apply(length_filter)].copy()
+                if df.empty:
+                    return df
+
+            # Deduplicate by normalized content
+            if deduplicate and not df.empty and "content" in df.columns:
+                sort_cols = [c for c in ["is_user_reviewed", "toxic_score"] if c in df.columns]
+                if sort_cols:
+                    df = df.sort_values(by=sort_cols, ascending=[False] * len(sort_cols))
+                df["_norm_content_dedup"] = df["content"].apply(lambda s: " ".join(str(s or "").split()).lower())
+                df = df.drop_duplicates(subset=["_norm_content_dedup"], keep="first")
+                df = df.drop(columns=["_norm_content_dedup"])
                 if df.empty:
                     return df
 
@@ -881,7 +957,8 @@ class DatabaseManager:
         limit: Optional[int] = None,
         viet_eng_only: bool = True,
         min_length: Optional[int] = 2,
-        max_length: Optional[int] = 300
+        max_length: Optional[int] = 300,
+        deduplicate: bool = True
     ) -> pd.DataFrame:
         """
         Query comments joined with posts, returning the structured requested columns:
@@ -897,6 +974,7 @@ class DatabaseManager:
         + Tự đánh giá và Từ lóng mới.
         - viet_eng_only: Lọc bỏ các bình luận tiếng Trung, Nhật, Hàn... và làm sạch ký tự.
         - min_length / max_length: Lọc bỏ các bình luận quá ngắn (< 2 như ừ, ờ) hoặc quá dài (> 300).
+        - deduplicate: Loại bỏ bình luận trùng lặp nội dung khi xuất.
         """
         with self.get_connection() as conn:
             query = """
@@ -979,6 +1057,17 @@ class DatabaseManager:
                         return False
                     return True
                 df = df[df["comment_content"].apply(length_filter)].copy()
+                if df.empty:
+                    return pd.DataFrame(columns=curated_empty_cols)
+
+            # Deduplicate by normalized content
+            if deduplicate and not df.empty and "comment_content" in df.columns:
+                sort_cols = [c for c in ["user_review", "toxic_score"] if c in df.columns]
+                if sort_cols:
+                    df = df.sort_values(by=sort_cols, ascending=[False] * len(sort_cols))
+                df["_norm_content_dedup"] = df["comment_content"].apply(lambda s: " ".join(str(s or "").split()).lower())
+                df = df.drop_duplicates(subset=["_norm_content_dedup"], keep="first")
+                df = df.drop(columns=["_norm_content_dedup"])
                 if df.empty:
                     return pd.DataFrame(columns=curated_empty_cols)
 
@@ -1289,6 +1378,166 @@ class DatabaseManager:
             "cleaned_comments": cleaned_comments
         }
 
+    def clean_ui_artifacts_in_db(self) -> Dict[str, int]:
+        """
+        Cleans Threads UI artifacts ('Translate 1 / 2', 'Translate', '1 / 2' carousel indicators, etc.)
+        from all posts and comments (including f0, f1, f2, f3) in the database.
+        """
+        with self.get_connection() as conn:
+            # 1. Clean posts
+            posts = conn.execute("SELECT id, content FROM posts").fetchall()
+            post_updates = []
+            for row in posts:
+                pid, content = row["id"], row["content"] or ""
+                cleaned = clean_ui_artifacts(content)
+                if cleaned != content:
+                    post_updates.append((cleaned, pid))
+
+            for cleaned, pid in post_updates:
+                conn.execute("UPDATE posts SET content = ? WHERE id = ?", (cleaned, pid))
+
+            # 2. Clean comments and generations
+            comments = conn.execute("SELECT id, content, f0, f1, f2, f3 FROM comments").fetchall()
+            comment_updates = []
+            for row in comments:
+                cid = row["id"]
+                c_content = row["content"] or ""
+                f0 = row["f0"] or ""
+                f1 = row["f1"] or ""
+                f2 = row["f2"] or ""
+                f3 = row["f3"] or ""
+
+                new_c = clean_ui_artifacts(c_content)
+                new_f0 = clean_ui_artifacts(f0) if f0 else ""
+                new_f1 = clean_ui_artifacts(f1) if f1 else ""
+                new_f2 = clean_ui_artifacts(f2) if f2 else ""
+                new_f3 = clean_ui_artifacts(f3) if f3 else ""
+
+                if new_c != c_content or new_f0 != f0 or new_f1 != f1 or new_f2 != f2 or new_f3 != f3:
+                    comment_updates.append((new_c, new_f0, new_f1, new_f2, new_f3, cid))
+
+            for new_c, new_f0, new_f1, new_f2, new_f3, cid in comment_updates:
+                conn.execute(
+                    "UPDATE comments SET content = ?, f0 = ?, f1 = ?, f2 = ?, f3 = ? WHERE id = ?",
+                    (new_c, new_f0, new_f1, new_f2, new_f3, cid)
+                )
+
+            conn.commit()
+
+        logger.info(f"Cleaned UI artifacts in DB: {len(post_updates)} posts, {len(comment_updates)} comments updated.")
+        return {
+            "cleaned_posts": len(post_updates),
+            "cleaned_comments": len(comment_updates)
+        }
+
+    def count_duplicate_comments(self) -> int:
+        """
+        Count total redundant duplicate comments in the database.
+        Returns the number of duplicate rows that can be purged (leaving 1 original per content).
+        """
+        from collections import Counter
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute("""
+                SELECT content
+                FROM comments
+                WHERE content IS NOT NULL AND TRIM(content) != ''
+            """).fetchall()
+            counter = Counter()
+            for r in rows:
+                norm = " ".join(str(r[0] or "").split()).lower()
+                counter[norm] += 1
+            total_redundant = sum(cnt - 1 for cnt in counter.values() if cnt > 1)
+            return total_redundant
+
+    def purge_duplicate_comments(self) -> Dict[str, int]:
+        """
+        Scan SQLite database for duplicate comments by normalized content.
+        Preserves the best record per content group:
+          1. Priority to user-reviewed comments (is_user_reviewed = 1)
+          2. Priority to higher toxic score / more severe classification
+          3. Earliest scraped_at timestamp
+        Deletes the remaining redundant copies.
+        Returns dict with statistics on purged comments.
+        """
+        from collections import defaultdict
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute("""
+                SELECT id, content, is_user_reviewed, toxic_score, scraped_at
+                FROM comments
+                WHERE content IS NOT NULL AND TRIM(content) != ''
+            """).fetchall()
+
+            groups = defaultdict(list)
+            for r in rows:
+                norm = " ".join(str(r["content"]).split()).lower()
+                groups[norm].append(r)
+
+            ids_to_delete = []
+            for norm_text, items in groups.items():
+                if len(items) <= 1:
+                    continue
+                sorted_items = sorted(
+                    items,
+                    key=lambda x: (
+                        1 if x["is_user_reviewed"] else 0,
+                        float(x["toxic_score"] or 0.0),
+                        -(datetime.fromisoformat(x["scraped_at"]).timestamp() if x["scraped_at"] else 0)
+                    ),
+                    reverse=True
+                )
+                for dup in sorted_items[1:]:
+                    ids_to_delete.append(dup["id"])
+
+            for cid in ids_to_delete:
+                cursor.execute("DELETE FROM comments WHERE id = ?", (cid,))
+
+            purged_count = len(ids_to_delete)
+            conn.commit()
+
+        logger.info(f"Purged {purged_count} duplicate comments from database.")
+        return {
+            "purged_duplicates": purged_count,
+            "remaining_comments": len(rows) - purged_count
+        }
+
+    def purge_duplicate_posts(self) -> int:
+        """
+        Purge duplicate posts by URL or normalized content.
+        Keeps the earliest scraped post.
+        """
+        from collections import defaultdict
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute("SELECT id, url, content, scraped_at FROM posts").fetchall()
+            groups = defaultdict(list)
+            for r in rows:
+                url_key = str(r["url"]).strip() if r["url"] else ""
+                content_key = " ".join(str(r["content"] or "").split()).lower()
+                key = url_key or content_key
+                groups[key].append(r)
+
+            ids_to_delete = []
+            for key, items in groups.items():
+                if len(items) <= 1:
+                    continue
+                sorted_items = sorted(
+                    items,
+                    key=lambda x: str(x["scraped_at"] or ""),
+                )
+                for dup in sorted_items[1:]:
+                    ids_to_delete.append(dup["id"])
+
+            for pid in ids_to_delete:
+                cursor.execute("DELETE FROM posts WHERE id = ?", (pid,))
+
+            purged = len(ids_to_delete)
+            conn.commit()
+
+        logger.info(f"Purged {purged} duplicate posts from database.")
+        return purged
+
     def delete_comments(self, comment_ids: List[str], cascade: bool = True) -> int:
         """
         Delete specific comments by ID list.
@@ -1366,16 +1615,784 @@ class DatabaseManager:
         logger.info(f"User deleted {total_deleted} comments successfully (cascade={cascade}).")
         return total_deleted
 
+    @staticmethod
+    def _build_length_condition(
+        col_name: str = "content",
+        min_length: Optional[int] = None,
+        max_length: Optional[int] = None,
+        length_op: Optional[str] = None,
+        length_val: Optional[int] = None
+    ) -> Tuple[str, List[Any]]:
+        """
+        Build SQL WHERE clause and parameters for length filtering.
+        Supports:
+          - length_op and length_val (operators: '<=', '<', '>=', '>', '==', '=', '!=')
+          - min_length and max_length (range or bounds)
+        """
+        clause = ""
+        params: List[Any] = []
+        op_map = {
+            "<=": "<=",
+            "<": "<",
+            ">=": ">=",
+            ">": ">",
+            "==": "=",
+            "=": "=",
+            "!=": "!="
+        }
+        if length_op and length_val is not None:
+            clean_op = op_map.get(str(length_op).strip())
+            if clean_op:
+                clause += f" AND LENGTH(TRIM({col_name})) {clean_op} ?"
+                params.append(int(length_val))
+        else:
+            if min_length is not None and int(min_length) > 0:
+                clause += f" AND LENGTH(TRIM({col_name})) >= ?"
+                params.append(int(min_length))
+            if max_length is not None and int(max_length) > 0:
+                clause += f" AND LENGTH(TRIM({col_name})) <= ?"
+                params.append(int(max_length))
+        return clause, params
+
+    def count_comments_by_length(
+        self,
+        operator: str,
+        length: int,
+        keep_reviewed: bool = False
+    ) -> int:
+        """
+        Count comments matching length operator ('<=', '<', '>=', '>', '==', '!=').
+        If keep_reviewed=True, excludes comments where is_user_reviewed=1.
+        """
+        op_map = {"<=": "<=", "<": "<", ">=": ">=", ">": ">", "==": "=", "=": "=", "!=": "!="}
+        sql_op = op_map.get(str(operator).strip())
+        if not sql_op:
+            raise ValueError(f"Toán tử không hợp lệ: {operator}. Chỉ hỗ trợ: <=, <, >=, >, ==, !=")
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = f"SELECT COUNT(*) FROM comments WHERE LENGTH(TRIM(content)) {sql_op} ?"
+            params: List[Any] = [int(length)]
+            if keep_reviewed:
+                query += " AND (is_user_reviewed = 0 OR is_user_reviewed IS NULL)"
+            return cursor.execute(query, params).fetchone()[0]
+
+    def delete_comments_by_length(
+        self,
+        operator: str,
+        length: int,
+        keep_reviewed: bool = True
+    ) -> int:
+        """
+        Delete comments matching length operator ('<=', '<', '>=', '>', '==', '!=').
+        If keep_reviewed=True, protects comments where is_user_reviewed=1.
+        Returns the count of deleted comments.
+        """
+        op_map = {"<=": "<=", "<": "<", ">=": ">=", ">": ">", "==": "=", "=": "=", "!=": "!="}
+        sql_op = op_map.get(str(operator).strip())
+        if not sql_op:
+            raise ValueError(f"Toán tử không hợp lệ: {operator}. Chỉ hỗ trợ: <=, <, >=, >, ==, !=")
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = f"DELETE FROM comments WHERE LENGTH(TRIM(content)) {sql_op} ?"
+            params: List[Any] = [int(length)]
+            if keep_reviewed:
+                query += " AND (is_user_reviewed = 0 OR is_user_reviewed IS NULL)"
+            cursor.execute(query, params)
+            deleted_count = cursor.rowcount
+            conn.commit()
+
+        logger.info(f"Deleted {deleted_count} comments matching length condition: {operator} {length} (keep_reviewed={keep_reviewed}).")
+        return deleted_count
+
+    def get_comments_by_length_preview(
+        self,
+        operator: str,
+        length: int,
+        keep_reviewed: bool = False,
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve sample comments matching length operator for UI preview.
+        """
+        op_map = {"<=": "<=", "<": "<", ">=": ">=", ">": ">", "==": "=", "=": "=", "!=": "!="}
+        sql_op = op_map.get(str(operator).strip())
+        if not sql_op:
+            return []
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = f"""
+                SELECT id, author_username, content, LENGTH(TRIM(content)) as content_length,
+                       is_user_reviewed, review_status_vi, toxic_score
+                FROM comments
+                WHERE LENGTH(TRIM(content)) {sql_op} ?
+            """
+            params: List[Any] = [int(length)]
+            if keep_reviewed:
+                query += " AND (is_user_reviewed = 0 OR is_user_reviewed IS NULL)"
+            query += " ORDER BY scraped_at DESC LIMIT ?"
+            params.append(int(limit))
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    def get_posts_for_management(
+        self,
+        search_kw: str = "",
+        author_username: str = "",
+        limit: Optional[int] = None
+    ) -> pd.DataFrame:
+        """
+        Fetch posts with actual comments count in DB and metadata for management/deletion.
+        """
+        with self.get_connection() as conn:
+            query = """
+                SELECT 
+                    p.id,
+                    p.author_username,
+                    p.content,
+                    p.url,
+                    p.likes,
+                    p.replies_count,
+                    p.categories,
+                    p.is_toxic,
+                    p.toxic_score,
+                    p.severity_vi,
+                    p.scraped_at,
+                    (
+                        SELECT COUNT(*) FROM comments c 
+                        WHERE c.post_id = p.id OR c.post_url = p.url
+                    ) as actual_comments_count
+                FROM posts p
+                WHERE 1=1
+            """
+            params = []
+            if search_kw:
+                query += " AND (p.content LIKE ? OR p.matched_words LIKE ?)"
+                kw = f"%{search_kw.strip()}%"
+                params.extend([kw, kw])
+            if author_username:
+                clean_user = author_username.strip().lstrip("@")
+                query += " AND p.author_username = ?"
+                params.append(clean_user)
+
+            query += " ORDER BY p.scraped_at DESC"
+            if limit is not None and limit > 0:
+                query += f" LIMIT {int(limit)}"
+
+            df = pd.read_sql_query(query, conn, params=params)
+            return df
+
+    def get_post_details(self, post_id_or_url: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve a single post along with its comment count and up to 5 sample comments.
+        """
+        target = str(post_id_or_url).strip()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            p_row = cursor.execute("""
+                SELECT * FROM posts WHERE id = ? OR url = ?
+            """, (target, target)).fetchone()
+            if not p_row:
+                return None
+
+            post_data = dict(p_row)
+            pid = post_data["id"]
+            purl = post_data["url"]
+
+            c_count = cursor.execute("""
+                SELECT COUNT(*) FROM comments WHERE post_id = ? OR post_url = ?
+            """, (pid, purl)).fetchone()[0]
+            post_data["actual_comments_count"] = c_count
+
+            sample_c = cursor.execute("""
+                SELECT id, author_username, content, likes, review_status_vi, toxic_score, scraped_at
+                FROM comments WHERE post_id = ? OR post_url = ?
+                ORDER BY scraped_at DESC LIMIT 5
+            """, (pid, purl)).fetchall()
+            post_data["sample_comments"] = [dict(c) for c in sample_c]
+
+            return post_data
+
+    def count_content_by_posts(
+        self,
+        post_ids_or_urls: Union[str, List[str]],
+        keep_reviewed: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Count total posts and comments associated with the specified post IDs or URLs.
+        If keep_reviewed=True, comments with is_user_reviewed=1 are excluded from comments_count.
+        """
+        if isinstance(post_ids_or_urls, str):
+            targets = [post_ids_or_urls.strip()] if post_ids_or_urls.strip() else []
+        elif isinstance(post_ids_or_urls, (list, tuple, set)):
+            targets = [str(x).strip() for x in post_ids_or_urls if x and str(x).strip()]
+        else:
+            targets = []
+
+        if not targets:
+            return {"posts_count": 0, "comments_count": 0, "total_items": 0, "post_ids": []}
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            ph = ",".join(["?"] * len(targets))
+            p_rows = cursor.execute(f"""
+                SELECT id, url FROM posts WHERE id IN ({ph}) OR url IN ({ph})
+            """, targets + targets).fetchall()
+
+            found_pids = [r["id"] for r in p_rows]
+            found_urls = [r["url"] for r in p_rows if r["url"]]
+
+            matching_c_ids = set()
+            if found_pids or found_urls:
+                for i in range(0, max(len(found_pids), len(found_urls)), 500):
+                    chunk_pids = found_pids[i:i+500]
+                    chunk_urls = found_urls[i:i+500]
+                    clauses = []
+                    params = []
+                    if chunk_pids:
+                        cph = ",".join(["?"] * len(chunk_pids))
+                        clauses.append(f"post_id IN ({cph})")
+                        params.extend(chunk_pids)
+                    if chunk_urls:
+                        uph = ",".join(["?"] * len(chunk_urls))
+                        clauses.append(f"post_url IN ({uph})")
+                        params.extend(chunk_urls)
+                    if clauses:
+                        q = f"SELECT id, is_user_reviewed FROM comments WHERE ({' OR '.join(clauses)})"
+                        c_rows = cursor.execute(q, params).fetchall()
+                        for r in c_rows:
+                            if not (keep_reviewed and r["is_user_reviewed"]):
+                                matching_c_ids.add(r["id"])
+
+            return {
+                "posts_count": len(found_pids),
+                "comments_count": len(matching_c_ids),
+                "total_items": len(found_pids) + len(matching_c_ids),
+                "post_ids": found_pids
+            }
+
+    def delete_posts_cascade(
+        self,
+        post_ids_or_urls: Union[str, List[str]],
+        keep_reviewed: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Cascade delete posts and all their related comments (roots & replies F1-F3).
+        "thì ta sẽ xóa những thứ liên quan tới bài viết":
+        - Deletes all comments on the specified posts.
+        - Deletes the posts themselves from posts table.
+        - If keep_reviewed=True, protects comments marked as is_user_reviewed=1.
+        - Re-backfills comment generations hierarchy (F0-F3) for remaining data.
+        Returns statistics of purged items.
+        """
+        if isinstance(post_ids_or_urls, str):
+            targets = [post_ids_or_urls.strip()] if post_ids_or_urls.strip() else []
+        elif isinstance(post_ids_or_urls, (list, tuple, set)):
+            targets = [str(x).strip() for x in post_ids_or_urls if x and str(x).strip()]
+        else:
+            targets = []
+
+        if not targets:
+            return {
+                "deleted_posts": 0,
+                "deleted_comments": 0,
+                "post_ids": [],
+                "remaining_posts": 0,
+                "remaining_comments": 0
+            }
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            ph = ",".join(["?"] * len(targets))
+            p_rows = cursor.execute(f"""
+                SELECT id, url FROM posts WHERE id IN ({ph}) OR url IN ({ph})
+            """, targets + targets).fetchall()
+
+            found_pids = [r["id"] for r in p_rows]
+            found_urls = [r["url"] for r in p_rows if r["url"]]
+
+            comments_to_delete = set()
+            if found_pids or found_urls:
+                for i in range(0, max(len(found_pids), len(found_urls)), 500):
+                    chunk_pids = found_pids[i:i+500]
+                    chunk_urls = found_urls[i:i+500]
+                    clauses = []
+                    params = []
+                    if chunk_pids:
+                        cph = ",".join(["?"] * len(chunk_pids))
+                        clauses.append(f"post_id IN ({cph})")
+                        params.extend(chunk_pids)
+                    if chunk_urls:
+                        uph = ",".join(["?"] * len(chunk_urls))
+                        clauses.append(f"post_url IN ({uph})")
+                        params.extend(chunk_urls)
+                    if clauses:
+                        q = f"SELECT id, is_user_reviewed FROM comments WHERE ({' OR '.join(clauses)})"
+                        c_rows = cursor.execute(q, params).fetchall()
+                        for r in c_rows:
+                            if not (keep_reviewed and r["is_user_reviewed"]):
+                                comments_to_delete.add(r["id"])
+
+            # Delete comments
+            c_list = list(comments_to_delete)
+            for i in range(0, len(c_list), 500):
+                chunk = c_list[i:i+500]
+                cph = ",".join(["?"] * len(chunk))
+                cursor.execute(f"DELETE FROM comments WHERE id IN ({cph})", chunk)
+
+            # Delete posts
+            for i in range(0, len(found_pids), 500):
+                chunk = found_pids[i:i+500]
+                cph = ",".join(["?"] * len(chunk))
+                cursor.execute(f"DELETE FROM posts WHERE id IN ({cph})", chunk)
+
+            conn.commit()
+
+            rem_c = cursor.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+            rem_p = cursor.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+
+        # Re-backfill comment generations
+        self.backfill_comment_generations()
+
+        logger.info(f"Cascade purged {len(found_pids)} posts ({found_pids}): deleted {len(c_list)} comments.")
+        return {
+            "deleted_posts": len(found_pids),
+            "deleted_comments": len(c_list),
+            "post_ids": found_pids,
+            "remaining_posts": rem_p,
+            "remaining_comments": rem_c
+        }
+
+    def delete_post_cascade(
+        self,
+        post_id_or_url: str,
+        keep_reviewed: bool = False
+    ) -> Dict[str, Any]:
+        """Convenience wrapper for deleting a single post and its related comments."""
+        return self.delete_posts_cascade([post_id_or_url], keep_reviewed=keep_reviewed)
+
+    def get_all_categories_in_db(self) -> List[str]:
+        """
+        Get all distinct categories/topics currently present across posts and comments in the database.
+        """
+        all_cats = set()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            p_rows = cursor.execute("SELECT categories FROM posts WHERE categories IS NOT NULL AND categories != ''").fetchall()
+            for r in p_rows:
+                try:
+                    parsed = json.loads(r[0])
+                    if isinstance(parsed, list):
+                        all_cats.update([str(c).strip() for c in parsed if str(c).strip()])
+                    elif parsed:
+                        all_cats.add(str(parsed).strip())
+                except Exception:
+                    pass
+
+            c_rows = cursor.execute("SELECT categories FROM comments WHERE categories IS NOT NULL AND categories != ''").fetchall()
+            for r in c_rows:
+                try:
+                    parsed = json.loads(r[0])
+                    if isinstance(parsed, list):
+                        all_cats.update([str(c).strip() for c in parsed if str(c).strip()])
+                    elif parsed:
+                        all_cats.add(str(parsed).strip())
+                except Exception:
+                    pass
+
+        return sorted(list(all_cats))
+
+    def _build_category_condition(
+        self,
+        filter_category: Optional[Union[str, List[str]]] = None,
+        c_alias: str = "",
+        p_alias: str = ""
+    ) -> Tuple[str, List[Any]]:
+        """
+        Build SQL condition and params for filtering comments by category/categories.
+        Works for a single category string or a list of categories.
+        """
+        if not filter_category:
+            return "", []
+
+        if isinstance(filter_category, str):
+            c_str = filter_category.strip()
+            if not c_str or c_str.lower() in ("all", "(tất cả)"):
+                return "", []
+            cats = [c_str]
+        elif isinstance(filter_category, (list, tuple, set)):
+            cats = [
+                str(c).strip() for c in filter_category
+                if c and str(c).strip() and str(c).strip().lower() not in ("all", "(tất cả)")
+            ]
+        else:
+            return "", []
+
+        if not cats:
+            return "", []
+
+        ph = ",".join(["?"] * len(cats))
+        col_c = f"{c_alias}.categories" if c_alias else "categories"
+
+        if p_alias:
+            col_p = f"{p_alias}.categories"
+            clause = f""" AND (
+                ({col_c} IS NOT NULL AND json_valid({col_c}) AND EXISTS (SELECT 1 FROM json_each({col_c}) WHERE value IN ({ph})))
+                OR ({col_p} IS NOT NULL AND json_valid({col_p}) AND EXISTS (SELECT 1 FROM json_each({col_p}) WHERE value IN ({ph})))
+            )"""
+        else:
+            col_post_id = f"{c_alias}.post_id" if c_alias else "post_id"
+            clause = f""" AND (
+                ({col_c} IS NOT NULL AND json_valid({col_c}) AND EXISTS (SELECT 1 FROM json_each({col_c}) WHERE value IN ({ph})))
+                OR ({col_post_id} IN (SELECT id FROM posts WHERE categories IS NOT NULL AND json_valid(categories) AND EXISTS (SELECT 1 FROM json_each(categories) WHERE value IN ({ph}))))
+            )"""
+
+        params = cats + cats
+        return clause, params
+
+    def _build_post_condition(
+        self,
+        filter_post: Optional[Union[str, List[str]]] = None,
+        c_alias: str = ""
+    ) -> Tuple[str, List[Any]]:
+        """
+        Build SQL condition and params for filtering comments by post ID or URL.
+        Works for single post or list of posts.
+        """
+        if not filter_post:
+            return "", []
+
+        if isinstance(filter_post, str):
+            p_str = filter_post.strip()
+            if not p_str or p_str.lower() in ("all", "(tất cả)", "(tất cả bài viết)"):
+                return "", []
+            p_targets = [p_str]
+        elif isinstance(filter_post, (list, tuple, set)):
+            p_targets = [
+                str(p).strip() for p in filter_post
+                if p and str(p).strip() and str(p).strip().lower() not in ("all", "(tất cả)", "(tất cả bài viết)")
+            ]
+        else:
+            return "", []
+
+        if not p_targets:
+            return "", []
+
+        col_post_id = f"{c_alias}.post_id" if c_alias else "post_id"
+        col_post_url = f"{c_alias}.post_url" if c_alias else "post_url"
+
+        ph = ",".join(["?"] * len(p_targets))
+        clause = f" AND ({col_post_id} IN ({ph}) OR {col_post_url} IN ({ph}))"
+        params = p_targets + p_targets
+        return clause, params
+
+    def count_content_by_categories(
+        self,
+        categories: Union[str, List[str]],
+        keep_reviewed: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Count total posts and comments associated with one or multiple categories/topics.
+        Includes:
+          1. Posts tagged with any of these categories.
+          2. Comments belonging to those posts.
+          3. Comments directly tagged with any of these categories.
+        If keep_reviewed=True, comments with is_user_reviewed=1 are excluded.
+        Returns total statistics as well as breakdown per category.
+        """
+        if isinstance(categories, str):
+            clean_cats = [categories.strip()] if categories.strip() else []
+        elif isinstance(categories, (list, tuple, set)):
+            clean_cats = [str(c).strip() for c in categories if c and str(c).strip()]
+        else:
+            clean_cats = []
+
+        if not clean_cats:
+            return {
+                "categories": [],
+                "posts_count": 0,
+                "comments_count": 0,
+                "total_items": 0,
+                "by_category": {}
+            }
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            ph_cats = ",".join(["?"] * len(clean_cats))
+
+            # 1. Matching posts across all categories
+            post_rows = cursor.execute(f"""
+                SELECT id, url, categories FROM posts 
+                WHERE categories IS NOT NULL AND json_valid(categories)
+                  AND EXISTS (SELECT 1 FROM json_each(categories) WHERE value IN ({ph_cats}))
+            """, clean_cats).fetchall()
+            post_ids = [r["id"] for r in post_rows]
+            post_urls = [r["url"] for r in post_rows if r["url"]]
+
+            # 2. Matching comments across all categories
+            matching_comment_ids = set()
+
+            # Direct tagged comments
+            direct_c_rows = cursor.execute(f"""
+                SELECT id, is_user_reviewed, categories FROM comments
+                WHERE categories IS NOT NULL AND json_valid(categories)
+                  AND EXISTS (SELECT 1 FROM json_each(categories) WHERE value IN ({ph_cats}))
+            """, clean_cats).fetchall()
+            for r in direct_c_rows:
+                if not (keep_reviewed and r["is_user_reviewed"]):
+                    matching_comment_ids.add(r["id"])
+
+            # Comments on matching posts
+            if post_ids or post_urls:
+                for i in range(0, max(len(post_ids), len(post_urls)), 500):
+                    chunk_pids = post_ids[i:i+500]
+                    chunk_urls = post_urls[i:i+500]
+                    clauses = []
+                    params = []
+                    if chunk_pids:
+                        ph = ",".join(["?"] * len(chunk_pids))
+                        clauses.append(f"post_id IN ({ph})")
+                        params.extend(chunk_pids)
+                    if chunk_urls:
+                        ph = ",".join(["?"] * len(chunk_urls))
+                        clauses.append(f"post_url IN ({ph})")
+                        params.extend(chunk_urls)
+                    if clauses:
+                        q = f"SELECT id, is_user_reviewed FROM comments WHERE ({' OR '.join(clauses)})"
+                        post_c_rows = cursor.execute(q, params).fetchall()
+                        for r in post_c_rows:
+                            if not (keep_reviewed and r["is_user_reviewed"]):
+                                matching_comment_ids.add(r["id"])
+
+            # Breakdown per category
+            by_category = {}
+            for cat in clean_cats:
+                p_for_cat = 0
+                for r in post_rows:
+                    try:
+                        c_list = json.loads(r["categories"]) if r["categories"] else []
+                        if cat in c_list:
+                            p_for_cat += 1
+                    except Exception:
+                        pass
+                
+                c_for_cat = 0
+                for r in direct_c_rows:
+                    if not (keep_reviewed and r["is_user_reviewed"]):
+                        try:
+                            c_list = json.loads(r["categories"]) if r["categories"] else []
+                            if cat in c_list:
+                                c_for_cat += 1
+                        except Exception:
+                            pass
+                by_category[cat] = {
+                    "posts": p_for_cat,
+                    "comments": c_for_cat,
+                    "total": p_for_cat + c_for_cat
+                }
+
+            return {
+                "categories": clean_cats,
+                "posts_count": len(post_ids),
+                "comments_count": len(matching_comment_ids),
+                "total_items": len(post_ids) + len(matching_comment_ids),
+                "by_category": by_category
+            }
+
+    def count_content_by_category(self, category: str, keep_reviewed: bool = False) -> Dict[str, int]:
+        """Backward-compatible helper for a single category."""
+        res = self.count_content_by_categories([category], keep_reviewed=keep_reviewed)
+        return {
+            "posts_count": res["posts_count"],
+            "comments_count": res["comments_count"],
+            "total_items": res["total_items"]
+        }
+
+    def delete_content_by_categories(
+        self,
+        categories: Union[str, List[str]],
+        keep_reviewed: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Delete all posts and comments associated with one or multiple categories/topics.
+        "xóa các chủ đề":
+        - Deletes all posts tagged with any of the selected categories.
+        - Deletes all comments on those posts.
+        - Deletes all comments directly tagged with any of the selected categories.
+        - Recalculates comment generation hierarchy (F0-F3).
+        If keep_reviewed=True, preserves comments where is_user_reviewed=1.
+        Returns dict with statistics on purged items across all categories.
+        """
+        if isinstance(categories, str):
+            clean_cats = [categories.strip()] if categories.strip() else []
+        elif isinstance(categories, (list, tuple, set)):
+            clean_cats = [str(c).strip() for c in categories if c and str(c).strip()]
+        else:
+            clean_cats = []
+
+        if not clean_cats:
+            return {
+                "categories": [],
+                "deleted_comments": 0,
+                "deleted_posts": 0,
+                "remaining_comments": 0,
+                "remaining_posts": 0
+            }
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            ph_cats = ",".join(["?"] * len(clean_cats))
+
+            # 1. Matching posts
+            post_rows = cursor.execute(f"""
+                SELECT id, url FROM posts 
+                WHERE categories IS NOT NULL AND json_valid(categories)
+                  AND EXISTS (SELECT 1 FROM json_each(categories) WHERE value IN ({ph_cats}))
+            """, clean_cats).fetchall()
+            post_ids = [r["id"] for r in post_rows]
+            post_urls = [r["url"] for r in post_rows if r["url"]]
+
+            # 2. Matching comments
+            comments_to_delete = set()
+
+            direct_c_rows = cursor.execute(f"""
+                SELECT id, is_user_reviewed FROM comments
+                WHERE categories IS NOT NULL AND json_valid(categories)
+                  AND EXISTS (SELECT 1 FROM json_each(categories) WHERE value IN ({ph_cats}))
+            """, clean_cats).fetchall()
+            for r in direct_c_rows:
+                if not (keep_reviewed and r["is_user_reviewed"]):
+                    comments_to_delete.add(r["id"])
+
+            if post_ids or post_urls:
+                for i in range(0, max(len(post_ids), len(post_urls)), 500):
+                    chunk_pids = post_ids[i:i+500]
+                    chunk_urls = post_urls[i:i+500]
+                    clauses = []
+                    params = []
+                    if chunk_pids:
+                        ph = ",".join(["?"] * len(chunk_pids))
+                        clauses.append(f"post_id IN ({ph})")
+                        params.extend(chunk_pids)
+                    if chunk_urls:
+                        ph = ",".join(["?"] * len(chunk_urls))
+                        clauses.append(f"post_url IN ({ph})")
+                        params.extend(chunk_urls)
+                    if clauses:
+                        q = f"SELECT id, is_user_reviewed FROM comments WHERE ({' OR '.join(clauses)})"
+                        post_c_rows = cursor.execute(q, params).fetchall()
+                        for r in post_c_rows:
+                            if not (keep_reviewed and r["is_user_reviewed"]):
+                                comments_to_delete.add(r["id"])
+
+            # Delete comments in chunks
+            c_list = list(comments_to_delete)
+            for i in range(0, len(c_list), 500):
+                chunk = c_list[i:i+500]
+                ph = ",".join(["?"] * len(chunk))
+                cursor.execute(f"DELETE FROM comments WHERE id IN ({ph})", chunk)
+
+            # Delete posts in chunks
+            for i in range(0, len(post_ids), 500):
+                chunk = post_ids[i:i+500]
+                ph = ",".join(["?"] * len(chunk))
+                cursor.execute(f"DELETE FROM posts WHERE id IN ({ph})", chunk)
+
+            conn.commit()
+
+            rem_c = cursor.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+            rem_p = cursor.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+
+        # Re-backfill generations
+        self.backfill_comment_generations()
+
+        logger.info(f"Purged {len(clean_cats)} categories ({clean_cats}): deleted {len(c_list)} comments, {len(post_ids)} posts.")
+        return {
+            "categories": clean_cats,
+            "category": ", ".join(clean_cats),
+            "deleted_comments": len(c_list),
+            "deleted_posts": len(post_ids),
+            "remaining_comments": rem_c,
+            "remaining_posts": rem_p
+        }
+
+    def delete_content_by_category(self, category: str, keep_reviewed: bool = False) -> Dict[str, int]:
+        """Backward-compatible helper for a single category."""
+        res = self.delete_content_by_categories([category], keep_reviewed=keep_reviewed)
+        return {
+            "category": category,
+            "deleted_comments": res["deleted_comments"],
+            "deleted_posts": res["deleted_posts"],
+            "remaining_comments": res["remaining_comments"],
+            "remaining_posts": res["remaining_posts"]
+        }
+
+    def get_categories_preview(
+        self,
+        categories: Union[str, List[str]],
+        limit: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Get sample posts and sample comments matching any of the specified categories for UI preview.
+        """
+        if isinstance(categories, str):
+            clean_cats = [categories.strip()] if categories.strip() else []
+        elif isinstance(categories, (list, tuple, set)):
+            clean_cats = [str(c).strip() for c in categories if c and str(c).strip()]
+        else:
+            clean_cats = []
+
+        if not clean_cats:
+            return {"sample_posts": [], "sample_comments": []}
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            ph_cats = ",".join(["?"] * len(clean_cats))
+
+            p_rows = cursor.execute(f"""
+                SELECT id, url, author_username, content, likes, scraped_at
+                FROM posts
+                WHERE categories IS NOT NULL AND json_valid(categories)
+                  AND EXISTS (SELECT 1 FROM json_each(categories) WHERE value IN ({ph_cats}))
+                ORDER BY scraped_at DESC LIMIT ?
+            """, clean_cats + [int(limit)]).fetchall()
+
+            c_rows = cursor.execute(f"""
+                SELECT id, author_username, content, likes, review_status_vi, toxic_score, scraped_at
+                FROM comments
+                WHERE categories IS NOT NULL AND json_valid(categories)
+                  AND EXISTS (SELECT 1 FROM json_each(categories) WHERE value IN ({ph_cats}))
+                ORDER BY scraped_at DESC LIMIT ?
+            """, clean_cats + [int(limit)]).fetchall()
+
+            return {
+                "sample_posts": [dict(r) for r in p_rows],
+                "sample_comments": [dict(r) for r in c_rows]
+            }
+
+    def get_category_preview(self, category: str, limit: int = 5) -> Dict[str, Any]:
+        """Backward-compatible helper for previewing a single category."""
+        return self.get_categories_preview([category], limit=limit)
+
     def delete_comments_by_filter(
         self,
         search_kw: str = "",
         author_username: str = "",
         max_length: Optional[int] = None,
+        min_length: Optional[int] = None,
+        length_op: Optional[str] = None,
+        length_val: Optional[int] = None,
+        keep_reviewed: bool = False,
         filter_status: str = "all",
-        filter_comment_type: str = "all"
+        filter_comment_type: str = "all",
+        filter_category: Optional[Union[str, List[str]]] = None,
+        filter_post: Optional[Union[str, List[str]]] = None
     ) -> int:
         """
-        Bulk delete comments matching criteria (e.g. short spam, specific keyword, or spam author).
+        Bulk delete comments matching criteria (e.g. short spam, specific keyword, spam author, category, or post).
         Returns the count of deleted records.
         """
         with self.get_connection() as conn:
@@ -1393,9 +2410,14 @@ class DatabaseManager:
                 query += " AND author_username = ?"
                 params.append(clean_user)
 
-            if max_length is not None and max_length > 0:
-                query += " AND LENGTH(TRIM(content)) <= ?"
-                params.append(int(max_length))
+            len_clause, len_params = self._build_length_condition(
+                "content", min_length=min_length, max_length=max_length, length_op=length_op, length_val=length_val
+            )
+            query += len_clause
+            params.extend(len_params)
+
+            if keep_reviewed:
+                query += " AND (is_user_reviewed = 0 OR is_user_reviewed IS NULL)"
 
             if filter_status == "bad":
                 query += " AND (review_status = 'bad' OR toxic_score >= 0.5)"
@@ -1408,6 +2430,14 @@ class DatabaseManager:
                 query += " AND (is_reply = 0 OR is_reply IS NULL)"
             elif filter_comment_type == "reply":
                 query += " AND is_reply = 1"
+
+            cat_clause, cat_params = self._build_category_condition(filter_category)
+            query += cat_clause
+            params.extend(cat_params)
+
+            post_clause, post_params = self._build_post_condition(filter_post)
+            query += post_clause
+            params.extend(post_params)
 
             cursor.execute(query, params)
             deleted_count = cursor.rowcount
@@ -1421,64 +2451,115 @@ class DatabaseManager:
         search_kw: str = "",
         author_username: str = "",
         max_length: Optional[int] = None,
+        min_length: Optional[int] = None,
+        length_op: Optional[str] = None,
+        length_val: Optional[int] = None,
         filter_status: str = "all",
         filter_comment_type: str = "all",
-        limit: Optional[int] = 500
+        filter_category: Optional[Union[str, List[str]]] = None,
+        filter_post: Optional[Union[str, List[str]]] = None,
+        limit: Optional[int] = 500,
+        offset: Optional[int] = 0,
+        order_by: str = "newest"
     ) -> pd.DataFrame:
         """
-        Fetch filtered comments formatted for interactive cleanup table.
-        Includes columns: id, author_username, content, length, comment_type_vi, reply_level, review_status_vi, likes, scraped_at.
+        Fetch filtered comments formatted for interactive cleanup table with pagination support.
+        Includes columns: id, author_username, content, length, comment_type_vi, reply_level, review_status_vi, likes, scraped_at, post_id, post_author, post_content, post_summary.
         """
         with self.get_connection() as conn:
             query = """
                 SELECT 
-                    id,
-                    author_username,
-                    content,
-                    LENGTH(TRIM(content)) as content_length,
-                    comment_type_vi,
-                    reply_level,
-                    review_status_vi,
-                    f0,
-                    f1,
-                    likes,
-                    scraped_at
-                FROM comments
+                    c.id,
+                    c.author_username,
+                    c.content,
+                    LENGTH(TRIM(c.content)) as content_length,
+                    c.comment_type_vi,
+                    c.reply_level,
+                    c.review_status_vi,
+                    c.f0,
+                    c.f1,
+                    c.likes,
+                    c.scraped_at,
+                    c.post_id,
+                    COALESCE(p.author_username, '') as post_author,
+                    COALESCE(p.content, '') as post_content,
+                    c.post_url
+                FROM comments c
+                LEFT JOIN posts p ON c.post_id = p.id
                 WHERE 1=1
             """
             params = []
 
             if search_kw:
-                query += " AND (content LIKE ? OR matched_words LIKE ?)"
+                query += " AND (c.content LIKE ? OR c.matched_words LIKE ?)"
                 kw_wildcard = f"%{search_kw.strip()}%"
                 params.extend([kw_wildcard, kw_wildcard])
 
             if author_username:
                 clean_user = author_username.strip().lstrip("@")
-                query += " AND author_username = ?"
+                query += " AND c.author_username = ?"
                 params.append(clean_user)
 
-            if max_length is not None and max_length > 0:
-                query += " AND LENGTH(TRIM(content)) <= ?"
-                params.append(int(max_length))
+            len_clause, len_params = self._build_length_condition(
+                "c.content", min_length=min_length, max_length=max_length, length_op=length_op, length_val=length_val
+            )
+            query += len_clause
+            params.extend(len_params)
 
             if filter_status == "bad":
-                query += " AND (review_status = 'bad' OR toxic_score >= 0.5)"
+                query += " AND (c.review_status = 'bad' OR c.toxic_score >= 0.5)"
             elif filter_status == "ambiguous":
-                query += " AND (review_status = 'ambiguous' OR (toxic_score >= 0.15 AND toxic_score < 0.5))"
+                query += " AND (c.review_status = 'ambiguous' OR (c.toxic_score >= 0.15 AND c.toxic_score < 0.5))"
             elif filter_status == "clean":
-                query += " AND (review_status = 'clean' OR toxic_score < 0.15)"
+                query += " AND (c.review_status = 'clean' OR c.toxic_score < 0.15)"
 
             if filter_comment_type == "root":
-                query += " AND (is_reply = 0 OR is_reply IS NULL)"
+                query += " AND (c.is_reply = 0 OR c.is_reply IS NULL)"
             elif filter_comment_type == "reply":
-                query += " AND is_reply = 1"
+                query += " AND c.is_reply = 1"
 
-            query += " ORDER BY scraped_at DESC"
+            cat_clause, cat_params = self._build_category_condition(filter_category, c_alias="c", p_alias="p")
+            query += cat_clause
+            params.extend(cat_params)
+
+            post_clause, post_params = self._build_post_condition(filter_post, c_alias="c")
+            query += post_clause
+            params.extend(post_params)
+
+            if order_by == "oldest":
+                query += " ORDER BY c.scraped_at ASC"
+            elif order_by == "toxic_score_desc":
+                query += " ORDER BY c.toxic_score DESC, c.scraped_at DESC"
+            elif order_by == "shortest_first":
+                query += " ORDER BY LENGTH(TRIM(c.content)) ASC, c.scraped_at DESC"
+            elif order_by == "longest_first":
+                query += " ORDER BY LENGTH(TRIM(c.content)) DESC, c.scraped_at DESC"
+            elif order_by == "post":
+                query += " ORDER BY p.author_username ASC, c.post_id ASC, c.scraped_at DESC"
+            else:  # newest
+                query += " ORDER BY c.scraped_at DESC"
+
             if limit is not None and limit > 0:
                 query += f" LIMIT {int(limit)}"
+            if offset is not None and offset > 0:
+                query += f" OFFSET {int(offset)}"
 
             df = pd.read_sql_query(query, conn, params=params)
+
+            if not df.empty and "post_content" in df.columns:
+                def make_post_summary(row):
+                    p_auth = str(row.get("post_author", "") or "").strip()
+                    p_txt = str(row.get("post_content", "") or "").strip()
+                    if not p_txt and not p_auth:
+                        p_id = str(row.get("post_id", "") or "").strip()
+                        return f"[Bài {p_id}]" if p_id else "Chưa rõ bài viết"
+                    snippet = (p_txt[:60] + "...") if len(p_txt) > 60 else p_txt
+                    if p_auth:
+                        return f"[@{p_auth}] {snippet}" if snippet else f"[@{p_auth}]"
+                    return snippet
+                df["post_summary"] = df.apply(make_post_summary, axis=1)
+            elif "post_summary" not in df.columns:
+                df["post_summary"] = ""
             return df
 
     def count_cleanup_comments(
@@ -1486,8 +2567,13 @@ class DatabaseManager:
         search_kw: str = "",
         author_username: str = "",
         max_length: Optional[int] = None,
+        min_length: Optional[int] = None,
+        length_op: Optional[str] = None,
+        length_val: Optional[int] = None,
         filter_status: str = "all",
-        filter_comment_type: str = "all"
+        filter_comment_type: str = "all",
+        filter_category: Optional[Union[str, List[str]]] = None,
+        filter_post: Optional[Union[str, List[str]]] = None
     ) -> int:
         """Count comments matching cleanup filter criteria."""
         with self.get_connection() as conn:
@@ -1504,9 +2590,11 @@ class DatabaseManager:
                 query += " AND author_username = ?"
                 params.append(clean_user)
 
-            if max_length is not None and max_length > 0:
-                query += " AND LENGTH(TRIM(content)) <= ?"
-                params.append(int(max_length))
+            len_clause, len_params = self._build_length_condition(
+                "content", min_length=min_length, max_length=max_length, length_op=length_op, length_val=length_val
+            )
+            query += len_clause
+            params.extend(len_params)
 
             if filter_status == "bad":
                 query += " AND (review_status = 'bad' OR toxic_score >= 0.5)"
@@ -1520,6 +2608,14 @@ class DatabaseManager:
             elif filter_comment_type == "reply":
                 query += " AND is_reply = 1"
 
+            cat_clause, cat_params = self._build_category_condition(filter_category)
+            query += cat_clause
+            params.extend(cat_params)
+
+            post_clause, post_params = self._build_post_condition(filter_post)
+            query += post_clause
+            params.extend(post_params)
+
             cursor = conn.cursor()
             return cursor.execute(query, params).fetchone()[0]
 
@@ -1529,8 +2625,13 @@ class DatabaseManager:
         search_kw: str = "",
         author_username: str = "",
         max_length: Optional[int] = None,
+        min_length: Optional[int] = None,
+        length_op: Optional[str] = None,
+        length_val: Optional[int] = None,
         filter_status: str = "all",
         filter_comment_type: str = "all",
+        filter_category: Optional[Union[str, List[str]]] = None,
+        filter_post: Optional[Union[str, List[str]]] = None,
         order_by: str = "newest"
     ) -> Optional[Dict[str, Any]]:
         """Fetch single comment with full context for single-comment cleanup card."""
@@ -1562,9 +2663,11 @@ class DatabaseManager:
                 query += " AND c.author_username = ?"
                 params.append(clean_user)
 
-            if max_length is not None and max_length > 0:
-                query += " AND LENGTH(TRIM(c.content)) <= ?"
-                params.append(int(max_length))
+            len_clause, len_params = self._build_length_condition(
+                "c.content", min_length=min_length, max_length=max_length, length_op=length_op, length_val=length_val
+            )
+            query += len_clause
+            params.extend(len_params)
 
             if filter_status == "bad":
                 query += " AND (c.review_status = 'bad' OR c.toxic_score >= 0.5)"
@@ -1577,6 +2680,14 @@ class DatabaseManager:
                 query += " AND (c.is_reply = 0 OR c.is_reply IS NULL)"
             elif filter_comment_type == "reply":
                 query += " AND c.is_reply = 1"
+
+            cat_clause, cat_params = self._build_category_condition(filter_category, c_alias="c", p_alias="p")
+            query += cat_clause
+            params.extend(cat_params)
+
+            post_clause, post_params = self._build_post_condition(filter_post, c_alias="c")
+            query += post_clause
+            params.extend(post_params)
 
             if order_by == "oldest":
                 query += " ORDER BY c.scraped_at ASC"

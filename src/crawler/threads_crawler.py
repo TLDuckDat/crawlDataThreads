@@ -55,12 +55,14 @@ class ThreadsCrawler:
         max_comments: Optional[int] = DEFAULT_MAX_COMMENTS,
         scroll_delay: float = DEFAULT_SCROLL_DELAY,
         progress_callback: Optional[Callable[[int, int, str, Optional[Dict]], None]] = None,
-        stop_check: Optional[Callable[[], bool]] = None
+        stop_check: Optional[Callable[[], bool]] = None,
+        deduplicate: bool = True
     ) -> Dict[str, Any]:
         """
         Crawl a specific post and its reply thread with maximum detail.
         Auto-expands 'Xem thêm' and 'View more replies'.
         max_comments: None hoặc 0 nghĩa là KHÔNG GIỚI HẠN (cào đến khi hết bình luận).
+        deduplicate: Tự động bỏ qua các bài viết và bình luận đã có trong CSDL hoặc trùng lặp nội dung.
         """
         canonical_url = resolve_threads_url(post_url)
         session_id = f"post_{uuid.uuid4().hex[:8]}"
@@ -73,10 +75,21 @@ class ThreadsCrawler:
         scraped_root_comments = 0
         scraped_child_comments = 0
         toxic_comments = 0
+        skipped_duplicates = 0
         seen_ids = set()
+        seen_contents = set()
+
+        if deduplicate:
+            try:
+                db_ids, db_contents = db_manager.get_existing_comment_hashes()
+                seen_ids.update(db_ids)
+                seen_contents.update(db_contents)
+                logger.info(f"Deduplication active: preloaded {len(db_ids)} IDs and {len(db_contents)} unique contents from DB.")
+            except Exception as e:
+                logger.warning(f"Failed to preload comment hashes for deduplication: {e}")
 
         try:
-            logger.info(f"Starting detailed crawl for post URL: {canonical_url} (Original: {post_url}, Unlimited: {is_unlimited})")
+            logger.info(f"Starting detailed crawl for post URL: {canonical_url} (Original: {post_url}, Unlimited: {is_unlimited}, Deduplicate: {deduplicate})")
             if progress_callback:
                 progress_callback(0, 0 if is_unlimited else max_comments, f"Khởi động trình duyệt cho: {canonical_url}...", None)
 
@@ -161,41 +174,48 @@ class ThreadsCrawler:
 
                     # First item on page is typically the main post
                     if not main_post_saved:
-                        analysis = toxic_engine.analyze(content)
-                        post_model = PostModel(
-                            id=main_post_id,
-                            url=canonical_url,
-                            author_username=username,
-                            author_name=author_name,
-                            author_profile_url=author_profile_url,
-                            content=content,
-                            posted_at=time_str,
-                            likes=likes,
-                            image_urls=image_urls,
-                            is_toxic=analysis.is_toxic,
-                            toxic_score=analysis.score,
-                            severity_vi=analysis.severity_vi,
-                            review_status=analysis.review_status,
-                            review_status_vi=analysis.review_status_vi,
-                            has_emoji_slang=analysis.has_emoji_slang,
-                            matched_words=analysis.matched_words,
-                            matched_emojis=analysis.matched_emojis,
-                            categories=analysis.category_names,
-                            session_id=session_id
-                        )
-                        db_manager.upsert_post(post_model)
                         main_post_saved = True
-                        scraped_posts += 1
+                        if not (deduplicate and db_manager.post_exists(main_post_id, canonical_url, content)):
+                            analysis = toxic_engine.analyze(content)
+                            post_model = PostModel(
+                                id=main_post_id,
+                                url=canonical_url,
+                                author_username=username,
+                                author_name=author_name,
+                                author_profile_url=author_profile_url,
+                                content=content,
+                                posted_at=time_str,
+                                likes=likes,
+                                image_urls=image_urls,
+                                is_toxic=analysis.is_toxic,
+                                toxic_score=analysis.score,
+                                severity_vi=analysis.severity_vi,
+                                review_status=analysis.review_status,
+                                review_status_vi=analysis.review_status_vi,
+                                has_emoji_slang=analysis.has_emoji_slang,
+                                matched_words=analysis.matched_words,
+                                matched_emojis=analysis.matched_emojis,
+                                categories=analysis.category_names,
+                                session_id=session_id
+                            )
+                            db_manager.upsert_post(post_model)
+                            scraped_posts += 1
+                        else:
+                            skipped_duplicates += 1
                         seen_ids.add(content)
+                        seen_contents.add(" ".join(content.split()).lower())
                         continue
 
                     # Subsequent items are comments
                     comment_id = generate_item_id("cmt", item_url, content, username)
-                    if comment_id in seen_ids or content in seen_ids:
+                    norm_content = " ".join(content.split()).lower()
+                    if comment_id in seen_ids or content in seen_ids or (deduplicate and norm_content in seen_contents):
+                        skipped_duplicates += 1
                         continue
 
                     seen_ids.add(comment_id)
                     seen_ids.add(content)
+                    seen_contents.add(norm_content)
 
                     has_down_connector = item.get("hasDownConnector", False)
 
@@ -338,7 +358,8 @@ class ThreadsCrawler:
                             "comment_type_vi": comment_type_vi
                         }
                         target_str = "∞" if is_unlimited else str(max_comments)
-                        status_msg = f"Đã thu thập: {scraped_comments}/{target_str} bình luận (Gốc: {scraped_root_comments}, Con: {scraped_child_comments}) | Độc hại: {toxic_comments}"
+                        dedup_str = f" | Bỏ qua trùng: {skipped_duplicates}" if skipped_duplicates > 0 else ""
+                        status_msg = f"Đã thu thập: {scraped_comments}/{target_str} bình luận (Gốc: {scraped_root_comments}, Con: {scraped_child_comments}) | Độc hại: {toxic_comments}{dedup_str}"
                         progress_callback(scraped_comments, 0 if is_unlimited else max_comments, status_msg, latest_info)
 
                     if not is_unlimited and scraped_comments >= max_comments:
@@ -384,7 +405,7 @@ class ThreadsCrawler:
 
             total_scraped = scraped_posts + scraped_comments
             db_manager.update_session(session_id, total_scraped, toxic_comments, "completed")
-            logger.info(f"Crawl completed! Scraped: {total_scraped}, Root: {scraped_root_comments}, Child: {scraped_child_comments}, Toxic: {toxic_comments}")
+            logger.info(f"Crawl completed! Scraped: {total_scraped}, Root: {scraped_root_comments}, Child: {scraped_child_comments}, Toxic: {toxic_comments}, Skipped Duplicates: {skipped_duplicates}")
 
             return {
                 "session_id": session_id,
@@ -394,6 +415,7 @@ class ThreadsCrawler:
                 "root_comments_count": scraped_root_comments,
                 "child_comments_count": scraped_child_comments,
                 "toxic_comments_count": toxic_comments,
+                "skipped_duplicates_count": skipped_duplicates,
                 "login_wall_hit": login_wall_hit,
                 "status": "success"
             }
@@ -422,11 +444,13 @@ class ThreadsCrawler:
         limit: Optional[int] = 30,
         scroll_delay: float = DEFAULT_SCROLL_DELAY,
         progress_callback: Optional[Callable[[int, int, str, Optional[Dict]], None]] = None,
-        stop_check: Optional[Callable[[], bool]] = None
+        stop_check: Optional[Callable[[], bool]] = None,
+        deduplicate: bool = True
     ) -> Dict[str, Any]:
         """
         Crawl Threads search page for controversial queries, drama keywords, or specific slang.
         limit: None hoặc 0 nghĩa là KHÔNG GIỚI HẠN.
+        deduplicate: Tự động bỏ qua các bài viết đã có trong CSDL hoặc trùng lặp URL/nội dung.
         """
         session_id = f"search_{uuid.uuid4().hex[:8]}"
         search_url = f"https://www.threads.net/search?q={query}"
@@ -436,10 +460,23 @@ class ThreadsCrawler:
         driver = None
         scraped_posts = 0
         toxic_posts = 0
+        skipped_duplicates = 0
         seen_ids = set()
+        seen_contents = set()
+        seen_urls = set()
+
+        if deduplicate:
+            try:
+                db_ids, db_urls, db_contents = db_manager.get_existing_post_hashes()
+                seen_ids.update(db_ids)
+                seen_urls.update(db_urls)
+                seen_contents.update(db_contents)
+                logger.info(f"Deduplication active for search: preloaded {len(db_ids)} IDs, {len(db_urls)} URLs, {len(db_contents)} contents from DB.")
+            except Exception as e:
+                logger.warning(f"Failed to preload post hashes for search deduplication: {e}")
 
         try:
-            logger.info(f"Starting search crawl for query: '{query}' (Unlimited: {is_unlimited})")
+            logger.info(f"Starting search crawl for query: '{query}' (Unlimited: {is_unlimited}, Deduplicate: {deduplicate})")
             if progress_callback:
                 progress_callback(0, 0 if is_unlimited else limit, f"Tìm kiếm Threads với từ khóa: {query}...", None)
 
@@ -488,11 +525,17 @@ class ThreadsCrawler:
                         continue
 
                     post_id = generate_item_id("post_search", item_url, content, username)
-                    if post_id in seen_ids or content in seen_ids:
+                    norm_content = " ".join(content.split()).lower()
+                    if (post_id in seen_ids or content in seen_ids or
+                        (deduplicate and (norm_content in seen_contents or (item_url and item_url in seen_urls)))):
+                        skipped_duplicates += 1
                         continue
 
                     seen_ids.add(post_id)
                     seen_ids.add(content)
+                    seen_contents.add(norm_content)
+                    if item_url:
+                        seen_urls.add(item_url)
                     new_items_in_round += 1
                     scraped_posts += 1
 
@@ -535,7 +578,8 @@ class ThreadsCrawler:
                             "categories": analysis.category_names
                         }
                         target_str = "∞" if is_unlimited else str(limit)
-                        status_msg = f"Đã thu thập: {scraped_posts}/{target_str} bài đăng (Độc hại: {toxic_posts})"
+                        dedup_str = f" | Bỏ qua trùng: {skipped_duplicates}" if skipped_duplicates > 0 else ""
+                        status_msg = f"Đã thu thập: {scraped_posts}/{target_str} bài đăng (Độc hại: {toxic_posts}){dedup_str}"
                         progress_callback(scraped_posts, 0 if is_unlimited else limit, status_msg, latest_info)
 
                     if not is_unlimited and scraped_posts >= limit:
@@ -562,6 +606,7 @@ class ThreadsCrawler:
                 "target": query,
                 "posts_count": scraped_posts,
                 "toxic_posts_count": toxic_posts,
+                "skipped_duplicates_count": skipped_duplicates,
                 "status": "success"
             }
         except Exception as e:

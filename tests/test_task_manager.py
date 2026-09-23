@@ -85,7 +85,7 @@ class TestTaskManager(unittest.TestCase):
         mock_crawler_cls.return_value = mock_instance
 
         # Mock results for 2 links
-        def side_effect(post_url, max_comments, scroll_delay, progress_callback, stop_check):
+        def side_effect(post_url, max_comments, scroll_delay, progress_callback, stop_check, **kwargs):
             if "link1" in post_url:
                 progress_callback(1, 10, "Done link 1", {"username": "a", "is_toxic": False, "is_reply": False})
                 return {"comments_count": 1, "root_comments_count": 1, "child_comments_count": 0, "toxic_comments_count": 0}
@@ -121,7 +121,7 @@ class TestTaskManager(unittest.TestCase):
 
         manager = CrawlerTaskManager()
 
-        def side_effect(post_url, max_comments, scroll_delay, progress_callback, stop_check):
+        def side_effect(post_url, max_comments, scroll_delay, progress_callback, stop_check, **kwargs):
             # Stop immediately during link 1
             manager.stop_crawl()
             return {"comments_count": 1, "root_comments_count": 1, "child_comments_count": 0, "toxic_comments_count": 0}

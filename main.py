@@ -28,6 +28,8 @@ def main():
     p_post.add_argument("--unlimited", action="store_true", default=False, help="Cào không giới hạn (cào toàn bộ bình luận đến hết)")
     p_post.add_argument("--headless", action="store_true", default=True, help="Chạy ẩn trình duyệt (mặc định: True)")
     p_post.add_argument("--no-headless", action="store_false", dest="headless", help="Hiện cửa sổ trình duyệt Chrome")
+    p_post.add_argument("--dedup", action="store_true", default=True, help="Tự động bỏ qua bình luận trùng lặp nội dung hoặc đã có trong CSDL (mặc định: Bật)")
+    p_post.add_argument("--no-dedup", action="store_false", dest="dedup", help="Tắt cơ chế bỏ qua trùng lặp")
 
     # Command: crawl-search
     p_search = subparsers.add_parser("crawl-search", help="Cào bài viết theo từ khóa tìm kiếm / drama trên Threads")
@@ -36,6 +38,8 @@ def main():
     p_search.add_argument("--unlimited", action="store_true", default=False, help="Cào không giới hạn (cào toàn bộ bài viết tìm được đến hết)")
     p_search.add_argument("--headless", action="store_true", default=True, help="Chạy ẩn trình duyệt")
     p_search.add_argument("--no-headless", action="store_false", dest="headless", help="Hiện cửa sổ trình duyệt")
+    p_search.add_argument("--dedup", action="store_true", default=True, help="Tự động bỏ qua bài viết trùng lặp URL hoặc nội dung (mặc định: Bật)")
+    p_search.add_argument("--no-dedup", action="store_false", dest="dedup", help="Tắt cơ chế bỏ qua trùng lặp")
 
     # Command: scan-text
     p_scan = subparsers.add_parser("scan-text", help="Kiểm tra độ độc hại, từ lóng, icon của một đoạn văn bản")
@@ -81,6 +85,46 @@ def main():
         help="Dọn dẹp CSDL: Xóa các bình luận/bài đăng tiếng Trung, Nhật, Hàn, Thái, Ả Rập... khỏi SQLite, làm sạch ký tự ngoại ngữ trong dữ liệu hiện có"
     )
 
+    # Command: purge-duplicates
+    subparsers.add_parser(
+        "purge-duplicates",
+        help="Dọn dẹp CSDL: Quét và xóa các bình luận/bài viết trùng lặp nội dung khỏi SQLite (chỉ giữ lại 1 bản ghi tốt nhất)"
+    )
+
+    # Command: purge-by-length
+    p_purge_len = subparsers.add_parser(
+        "purge-by-length",
+        help="Dọn dẹp CSDL: Xóa bình luận theo độ dài ký tự tự chọn (ví dụ: <= 2, >= 300, v.v.)"
+    )
+    p_purge_len.add_argument("--op", choices=["<=", "<", ">=", ">", "==", "!="], default="<=", help="Toán tử so sánh (mặc định: <=)")
+    p_purge_len.add_argument("--len", "-l", type=int, required=True, help="Số lượng ký tự (ví dụ: 2, 3, 300...)")
+    p_purge_len.add_argument("--no-protect-reviewed", action="store_false", dest="protect_reviewed", default=True, help="Xóa cả những bình luận đã tự dán nhãn thủ công (mặc định: bảo vệ/giữ lại bình luận đã đánh giá)")
+    p_purge_len.add_argument("--yes", "-y", action="store_true", default=False, help="Bỏ qua bước xác nhận")
+
+    # Command: purge-by-category
+    p_purge_cat = subparsers.add_parser(
+        "purge-by-category",
+        help="Dọn dẹp CSDL: Xóa toàn bộ nội dung theo các chủ đề (xóa sạch bài viết và bình luận thuộc các chủ đề đã chọn)"
+    )
+    p_purge_cat.add_argument("--category", "-c", type=str, action="append", default=[], help="Tên chủ đề cần xóa (có thể truyền nhiều lần: -c 'Chủ đề 1' -c 'Chủ đề 2' hoặc phân tách dấu phẩy)")
+    p_purge_cat.add_argument("--categories", type=str, default=None, help="Danh sách các chủ đề cần xóa (ngăn cách bằng dấu phẩy)")
+    p_purge_cat.add_argument("--all", "-a", action="store_true", default=False, dest="purge_all_cats", help="Xóa TOÀN BỘ tất cả các chủ đề hiện có trong CSDL")
+    p_purge_cat.add_argument("--list", "-l", action="store_true", default=False, help="Liệt kê danh sách tất cả các chủ đề hiện có trong CSDL")
+    p_purge_cat.add_argument("--no-protect-reviewed", action="store_false", dest="protect_reviewed", default=True, help="Xóa cả những bình luận đã tự dán nhãn thủ công (mặc định: bảo vệ bình luận đã đánh giá)")
+    p_purge_cat.add_argument("--yes", "-y", action="store_true", default=False, help="Bỏ qua bước xác nhận")
+
+    # Command: purge-post
+    p_purge_post = subparsers.add_parser(
+        "purge-post",
+        help="Dọn dẹp CSDL: Xóa bài viết và toàn bộ bình luận liên quan (cascade)"
+    )
+    p_purge_post.add_argument("--id", type=str, default=None, help="ID của bài viết cần xóa")
+    p_purge_post.add_argument("--url", "-u", type=str, default=None, help="URL của bài viết cần xóa")
+    p_purge_post.add_argument("--keyword", "-k", type=str, default=None, help="Xóa tất cả các bài viết có nội dung chứa từ khóa")
+    p_purge_post.add_argument("--list", "-l", action="store_true", default=False, help="Liệt kê danh sách các bài viết hiện có trong CSDL kèm số bình luận")
+    p_purge_post.add_argument("--no-protect-reviewed", action="store_false", dest="protect_reviewed", default=True, help="Xóa cả những bình luận đã tự dán nhãn thủ công (mặc định: bảo vệ bình luận đã đánh giá)")
+    p_purge_post.add_argument("--yes", "-y", action="store_true", default=False, help="Bỏ qua bước xác nhận")
+
     # Command: clear-db
     p_clear = subparsers.add_parser(
         "clear-db",
@@ -102,24 +146,172 @@ def main():
     if args.command == "crawl-post":
         max_comments = 0 if args.unlimited else args.max
         limit_desc = "KHÔNG GIỚI HẠN (∞)" if (args.unlimited or args.max <= 0) else str(args.max)
+        dedup_desc = "Bật (Tự động bỏ qua trùng lặp)" if args.dedup else "Tắt"
         print(f"\n=======================================================")
         print(f"[*] ĐANG BẮT ĐẦU CÀO CHI TIẾT BÌNH LUẬN TỪ: {args.url}")
-        print(f"[*] Số lượng: {limit_desc} | Headless: {args.headless}")
+        print(f"[*] Số lượng: {limit_desc} | Headless: {args.headless} | Khử trùng lặp: {dedup_desc}")
         print(f"=======================================================")
         crawler = ThreadsCrawler(headless=args.headless)
-        res = crawler.crawl_post_and_comments(post_url=args.url, max_comments=max_comments)
-        print(f"\n[+] KẾT QUẢ: Thu thập {res.get('comments_count', 0)} bình luận (Gốc: {res.get('root_comments_count', 0)}, Con: {res.get('child_comments_count', 0)}) | Phát hiện {res.get('toxic_comments_count', 0)} bình luận xúc phạm/từ lóng.")
+        res = crawler.crawl_post_and_comments(post_url=args.url, max_comments=max_comments, deduplicate=args.dedup)
+        skipped = res.get('skipped_duplicates_count', 0)
+        skipped_str = f" | Bỏ qua {skipped} dữ liệu trùng" if skipped > 0 else ""
+        print(f"\n[+] KẾT QUẢ: Thu thập {res.get('comments_count', 0)} bình luận (Gốc: {res.get('root_comments_count', 0)}, Con: {res.get('child_comments_count', 0)}) | Phát hiện {res.get('toxic_comments_count', 0)} bình luận xúc phạm/từ lóng{skipped_str}.")
 
     elif args.command == "crawl-search":
         limit_search = 0 if args.unlimited else args.limit
         limit_desc = "KHÔNG GIỚI HẠN (∞)" if (args.unlimited or args.limit <= 0) else str(args.limit)
+        dedup_desc = "Bật (Tự động bỏ qua trùng lặp)" if args.dedup else "Tắt"
         print(f"\n=======================================================")
         print(f"[*] TÌM KIẾM VÀ CÀO THREADS THEO TỪ KHÓA: '{args.query}'")
-        print(f"[*] Số lượng: {limit_desc} | Headless: {args.headless}")
+        print(f"[*] Số lượng: {limit_desc} | Headless: {args.headless} | Khử trùng lặp: {dedup_desc}")
         print(f"=======================================================\n")
         crawler = ThreadsCrawler(headless=args.headless)
-        res = crawler.crawl_search_query(query=args.query, limit=limit_search)
-        print(f"\n[+] KẾT QUẢ: Thu thập {res.get('posts_count', 0)} bài đăng | Phát hiện {res.get('toxic_posts_count', 0)} bài đăng vi phạm.")
+        res = crawler.crawl_search_query(query=args.query, limit=limit_search, deduplicate=args.dedup)
+        skipped = res.get('skipped_duplicates_count', 0)
+        skipped_str = f" | Bỏ qua {skipped} dữ liệu trùng" if skipped > 0 else ""
+        print(f"\n[+] KẾT QUẢ: Thu thập {res.get('posts_count', 0)} bài đăng | Phát hiện {res.get('toxic_posts_count', 0)} bài đăng vi phạm{skipped_str}.")
+
+    elif args.command == "purge-duplicates":
+        print("\n[*] Đang quét và dọn dẹp dữ liệu trùng lặp trong CSDL SQLite...")
+        res_c = db_manager.purge_duplicate_comments()
+        res_p = db_manager.purge_duplicate_posts()
+        print(f"[+] Hoàn tất! Đã xóa {res_c.get('purged_duplicates', 0)} bình luận trùng lặp và {res_p} bài viết trùng lặp.")
+        print(f"[+] Còn lại {res_c.get('remaining_comments', 0)} bình luận độc nhất trong CSDL.")
+
+    elif args.command == "purge-by-length":
+        count_match = db_manager.count_comments_by_length(args.op, args.len, keep_reviewed=args.protect_reviewed)
+        prot_str = " (Bảo vệ bình luận đã dán nhãn thủ công)" if args.protect_reviewed else " (XÓA CẢ BÌNH LUẬN ĐÃ DÁN NHÃN)"
+        print(f"\n[*] Điều kiện lọc: Độ dài nội dung {args.op} {args.len} ký tự{prot_str}")
+        print(f"[*] Tìm thấy {count_match} bình luận thỏa mãn điều kiện.")
+
+        if count_match == 0:
+            print("[+] Không có bình luận nào khớp với điều kiện. Không cần xóa.")
+            sys.exit(0)
+
+        confirmed = args.yes
+        if not confirmed:
+            try:
+                ans = input(f"❓ Bạn có chắc chắn muốn xóa vĩnh viễn {count_match} bình luận này? (y/N): ").strip().lower()
+                confirmed = (ans in ["y", "yes"])
+            except (EOFError, KeyboardInterrupt):
+                confirmed = False
+
+        if not confirmed:
+            print("[~] Đã hủy thao tác xóa.")
+            sys.exit(0)
+
+        deleted = db_manager.delete_comments_by_length(args.op, args.len, keep_reviewed=args.protect_reviewed)
+        db_manager.backfill_comment_generations()
+        print(f"[+] Hoàn tất! Đã xóa thành công {deleted} bình luận khỏi CSDL.")
+
+    elif args.command == "purge-by-category":
+        if args.list:
+            cats = db_manager.get_all_categories_in_db()
+            print("\n[*] Danh sách các chủ đề hiện có trong CSDL:")
+            if not cats:
+                print("   (Không có chủ đề nào)")
+            for idx, c in enumerate(cats, 1):
+                cnt = db_manager.count_content_by_category(c, keep_reviewed=args.protect_reviewed)
+                print(f"   {idx}. {c} -> {cnt['posts_count']} bài viết, {cnt['comments_count']} bình luận (Tổng: {cnt['total_items']})")
+            sys.exit(0)
+
+        # Collect targets from --category, --categories, or --all
+        raw_cats = list(args.category) if isinstance(args.category, list) else ([args.category] if args.category else [])
+        if getattr(args, "categories", None):
+            raw_cats.extend([x.strip() for x in str(args.categories).split(",") if x.strip()])
+        if getattr(args, "purge_all_cats", False):
+            raw_cats = db_manager.get_all_categories_in_db()
+
+        target_cats = []
+        for rc in raw_cats:
+            for item in str(rc).split(","):
+                clean = item.strip()
+                if clean and clean not in target_cats:
+                    target_cats.append(clean)
+
+        if not target_cats:
+            print("[!] Lỗi: Vui lòng chỉ định ít nhất một chủ đề cần xóa với --category / -c, hoặc dùng --list để xem danh sách, hoặc --all để xóa toàn bộ chủ đề.")
+            sys.exit(1)
+
+        cnt = db_manager.count_content_by_categories(target_cats, keep_reviewed=args.protect_reviewed)
+        prot_str = " (Bảo vệ bình luận đã dán nhãn thủ công)" if args.protect_reviewed else " (XÓA CẢ BÌNH LUẬN ĐÃ DÁN NHÃN)"
+        print(f"\n[*] Các chủ đề chọn xóa: {', '.join(target_cats)}{prot_str}")
+        print(f"[*] Tổng cộng tìm thấy: {cnt['posts_count']} bài viết, {cnt['comments_count']} bình luận (Tổng: {cnt['total_items']} nội dung).")
+        if len(target_cats) > 1 and cnt.get("by_category"):
+            print("[*] Chi tiết từng chủ đề:")
+            for cat_name, cinfo in cnt["by_category"].items():
+                print(f"    - {cat_name}: {cinfo['posts']} bài viết, {cinfo['comments']} bình luận")
+
+        if cnt["total_items"] == 0:
+            print("[+] Không có bài viết hoặc bình luận nào thuộc các chủ đề này. Không cần xóa.")
+            sys.exit(0)
+
+        confirmed = args.yes
+        if not confirmed:
+            try:
+                ans = input(f"⚠️ Bạn có chắc chắn muốn xóa VĨNH VIỄN toàn bộ nội dung thuộc {len(target_cats)} chủ đề trên? (y/N): ").strip().lower()
+                confirmed = (ans in ["y", "yes"])
+            except (EOFError, KeyboardInterrupt):
+                confirmed = False
+
+        if not confirmed:
+            print("[~] Đã hủy thao tác xóa.")
+            sys.exit(0)
+
+        res = db_manager.delete_content_by_categories(target_cats, keep_reviewed=args.protect_reviewed)
+        print(f"[+] Hoàn tất! Đã xóa sạch {res['deleted_posts']} bài viết và {res['deleted_comments']} bình luận thuộc các chủ đề: {', '.join(target_cats)}.")
+        print(f"[+] CSDL hiện còn {res['remaining_posts']} bài viết và {res['remaining_comments']} bình luận.")
+
+    elif args.command == "purge-post":
+        if args.list:
+            df_p = db_manager.get_posts_for_management()
+            print("\n[*] Danh sách các bài viết hiện có trong CSDL:")
+            if df_p.empty:
+                print("   (Không có bài viết nào trong CSDL)")
+            for idx, r in df_p.iterrows():
+                content_preview = (r["content"][:60] + "...") if len(str(r["content"])) > 60 else r["content"]
+                print(f"   {idx+1}. [@{r['author_username']}] {content_preview} -> {r['actual_comments_count']} bình luận (ID: {r['id']})")
+                print(f"      URL: {r['url']}")
+            sys.exit(0)
+
+        target_pids = []
+        if args.id:
+            target_pids.append(args.id.strip())
+        if args.url:
+            target_pids.append(args.url.strip())
+        if args.keyword:
+            df_matches = db_manager.get_posts_for_management(search_kw=args.keyword.strip())
+            for pid in df_matches["id"].tolist():
+                if pid not in target_pids:
+                    target_pids.append(pid)
+
+        if not target_pids:
+            print("[!] Lỗi: Vui lòng chỉ định bài viết cần xóa với --id, --url, hoặc --keyword, hoặc dùng --list để xem danh sách.")
+            sys.exit(1)
+
+        cnt = db_manager.count_content_by_posts(target_pids, keep_reviewed=args.protect_reviewed)
+        if cnt["posts_count"] == 0:
+            print("[!] Không tìm thấy bài viết nào khớp với thông tin đã cung cấp trong CSDL.")
+            sys.exit(0)
+
+        prot_str = " (Bảo vệ bình luận đã dán nhãn thủ công)" if args.protect_reviewed else " (XÓA CẢ BÌNH LUẬN ĐÃ DÁN NHÃN)"
+        print(f"\n[*] Tìm thấy: {cnt['posts_count']} bài viết và {cnt['comments_count']} bình luận liên quan{prot_str}.")
+
+        confirmed = args.yes
+        if not confirmed:
+            try:
+                ans = input(f"⚠️ Bạn có chắc chắn muốn xóa VĨNH VIỄN {cnt['posts_count']} bài viết và toàn bộ {cnt['comments_count']} bình luận liên quan? (y/N): ").strip().lower()
+                confirmed = (ans in ["y", "yes"])
+            except (EOFError, KeyboardInterrupt):
+                confirmed = False
+
+        if not confirmed:
+            print("[~] Đã hủy thao tác xóa.")
+            sys.exit(0)
+
+        res = db_manager.delete_posts_cascade(target_pids, keep_reviewed=args.protect_reviewed)
+        print(f"[+] Hoàn tất! Đã xóa sạch {res['deleted_posts']} bài viết và {res['deleted_comments']} bình luận liên quan.")
+        print(f"[+] CSDL hiện còn {res['remaining_posts']} bài viết và {res['remaining_comments']} bình luận.")
 
     elif args.command == "scan-text":
         res = toxic_engine.analyze(args.text)

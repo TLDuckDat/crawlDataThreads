@@ -22,7 +22,8 @@ class DataExporter:
         table_type: str = "comments",  # "comments" or "posts"
         toxic_only: bool = False,       # Default False so user can aggregate all data
         filename: Optional[str] = None,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        deduplicate: bool = True
     ) -> Path:
         """
         Export a comprehensive, human-readable CSV with Vietnamese column names,
@@ -34,7 +35,7 @@ class DataExporter:
         out_name = filename or f"threads_{table_type}_{suffix}_{timestamp}.csv"
         out_path = self.export_dir / out_name
 
-        df = db_manager.get_detailed_export_df(table_type=table_type, toxic_only=toxic_only, limit=limit)
+        df = db_manager.get_detailed_export_df(table_type=table_type, toxic_only=toxic_only, limit=limit, deduplicate=deduplicate)
         df.to_csv(out_path, index=False, encoding="utf-8-sig")
         logger.info(f"Exported detailed CSV file successfully: {out_path} ({len(df)} rows)")
         return out_path
@@ -49,7 +50,8 @@ class DataExporter:
         columns: Optional[List[str]] = None,
         viet_eng_only: bool = True,
         min_length: Optional[int] = 2,
-        max_length: Optional[int] = 300
+        max_length: Optional[int] = 300,
+        deduplicate: bool = True
     ) -> Path:
         """
         Export comments focused CSV:
@@ -59,6 +61,7 @@ class DataExporter:
         - limit: None (Không giới hạn)
         - columns: Danh sách cột cần xuất (Nếu người dùng ẩn bớt cột trên giao diện)
         - min_length / max_length: Lọc bỏ bình luận quá ngắn (< 2) và quá dài (> 300)
+        - deduplicate: Loại bỏ bình luận trùng lặp nội dung.
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         status_slug_map = {
@@ -85,7 +88,8 @@ class DataExporter:
             limit=limit,
             viet_eng_only=viet_eng_only,
             min_length=min_length,
-            max_length=max_length
+            max_length=max_length,
+            deduplicate=deduplicate
         )
         if columns:
             valid_cols = [c for c in columns if c in df.columns]
@@ -132,7 +136,8 @@ class DataExporter:
         toxic_only: bool = True,
         filename: Optional[str] = None,
         limit: Optional[int] = None,
-        columns: Optional[List[str]] = None
+        columns: Optional[List[str]] = None,
+        deduplicate: bool = True
     ) -> Path:
         """
         Export data to formatted Excel workbook with color highlights for toxic content.
@@ -144,7 +149,7 @@ class DataExporter:
 
         with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
             if table_type in ["comments", "both"]:
-                df_c = db_manager.get_detailed_export_df(table_type="comments", toxic_only=toxic_only, limit=limit)
+                df_c = db_manager.get_detailed_export_df(table_type="comments", toxic_only=toxic_only, limit=limit, deduplicate=deduplicate)
                 if columns:
                     valid_cols = [c for c in columns if c in df_c.columns]
                     if valid_cols:
@@ -152,7 +157,7 @@ class DataExporter:
                 df_c.to_excel(writer, sheet_name="Bình luận", index=False)
 
             if table_type in ["posts", "both"]:
-                df_p = db_manager.get_detailed_export_df(table_type="posts", toxic_only=toxic_only, limit=limit)
+                df_p = db_manager.get_detailed_export_df(table_type="posts", toxic_only=toxic_only, limit=limit, deduplicate=deduplicate)
                 df_p.to_excel(writer, sheet_name="Bài đăng", index=False)
 
         self._format_excel_file(out_path)
@@ -168,12 +173,14 @@ class DataExporter:
         columns: Optional[List[str]] = None,
         viet_eng_only: bool = True,
         min_length: Optional[int] = 2,
-        max_length: Optional[int] = 300
+        max_length: Optional[int] = 300,
+        deduplicate: bool = True
     ) -> Path:
         """
         Export curated data with fixed widths and wrap text.
         If columns is specified, only include selected visible columns.
         min_length / max_length: Filters out comments < 2 and > 300 characters.
+        deduplicate: Loại bỏ bình luận trùng lặp nội dung.
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_name = filename or f"threads_danh_gia_4_cot_{filter_status}_{timestamp}.xlsx"
@@ -185,7 +192,8 @@ class DataExporter:
             limit=limit,
             viet_eng_only=viet_eng_only,
             min_length=min_length,
-            max_length=max_length
+            max_length=max_length,
+            deduplicate=deduplicate
         )
 
         if columns:
@@ -213,12 +221,14 @@ class DataExporter:
         columns: Optional[List[str]] = None,
         viet_eng_only: bool = True,
         min_length: Optional[int] = 2,
-        max_length: Optional[int] = 300
+        max_length: Optional[int] = 300,
+        deduplicate: bool = True
     ) -> Path:
         """
         Export curated data to UTF-8-BOM CSV for Excel compatibility.
         If columns is specified, only include selected visible columns.
         min_length / max_length: Filters out comments < 2 and > 300 characters.
+        deduplicate: Loại bỏ bình luận trùng lặp nội dung.
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_name = filename or f"threads_danh_gia_4_cot_{filter_status}_{timestamp}.csv"
@@ -230,7 +240,8 @@ class DataExporter:
             limit=limit,
             viet_eng_only=viet_eng_only,
             min_length=min_length,
-            max_length=max_length
+            max_length=max_length,
+            deduplicate=deduplicate
         )
 
         if columns:

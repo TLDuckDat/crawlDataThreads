@@ -240,8 +240,10 @@ return (() => {
 
         for (const cand of contentCandidates) {
             let t = (cand.innerText || "").trim();
-            // Clean out 'Translate' or 'Dịch'
-            t = t.replace(/\\s*(Translate|Dịch)\\s*$/i, '').trim();
+            // Clean out 'Translate', 'Xem bản dịch', 'Dịch' and carousel indicators
+            t = t.replace(/\\s*\\b(?:Translate|Xem bản dịch|Dịch)\\s+\\d+\\s*\\/\\s*\\d+\\b/gi, '').trim();
+            t = t.replace(/\\s*\\b(?:Translate|Xem bản dịch|Dịch)\\s*$/gi, '').trim();
+            t = t.replace(/\\s*\\b\\d+\\s*\\/\\s*\\d+\\s*$/g, '').trim();
             
             // Skip badges, dates, user handles, numbers
             if (t === username || t === authorName || t === 'Author' || t === 'Tác giả' || t === 'Pinned' || t === 'Ghim' || t === 'Edited' || t === 'Đã chỉnh sửa') continue;
@@ -263,7 +265,9 @@ return (() => {
             let extractedParts = [];
             textSpans.forEach(s => {
                 let t = (s.innerText || "").trim();
-                t = t.replace(/\\s*(Translate|Dịch)\\s*$/i, '').trim();
+                t = t.replace(/\\s*\\b(?:Translate|Xem bản dịch|Dịch)\\s+\\d+\\s*\\/\\s*\\d+\\b/gi, '').trim();
+                t = t.replace(/\\s*\\b(?:Translate|Xem bản dịch|Dịch)\\s*$/gi, '').trim();
+                t = t.replace(/\\s*\\b\\d+\\s*\\/\\s*\\d+\\s*$/g, '').trim();
                 if (t.length > 1 && 
                     !['Like', 'Reply', 'Repost', 'Share', 'Thread', 'Follow', 'Đang theo dõi', 'Theo dõi', 'Thích', 'Trả lời', 'Author', 'Pinned', 'Ghim', 'Edited'].includes(t) &&
                     !t.match(/^\\d{1,2}\\/\\d{1,2}\\/\\d{2,4}$/) &&
@@ -276,6 +280,12 @@ return (() => {
                 }
             });
             chosenContent = [...new Set(extractedParts)].join(" ").trim();
+        }
+
+        if (chosenContent) {
+            chosenContent = chosenContent.replace(/\\s*\\b(?:Translate|Xem bản dịch|Dịch)\\s+\\d+\\s*\\/\\s*\\d+\\b/gi, '').trim();
+            chosenContent = chosenContent.replace(/\\s*\\b(?:Translate|Xem bản dịch|Dịch)\\s*$/gi, '').trim();
+            chosenContent = chosenContent.replace(/\\s*\\b\\d+\\s*\\/\\s*\\d+\\s*$/g, '').trim();
         }
 
         const lowerContent = chosenContent.toLowerCase();

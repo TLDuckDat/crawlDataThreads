@@ -58,6 +58,7 @@ class CrawlerTaskManager:
         self.root_count: int = 0
         self.child_count: int = 0
         self.toxic_count: int = 0
+        self.skipped_duplicates_count: int = 0
         self.status_message: str = "Sẵn sàng"
         self.latest_item: Optional[Dict[str, Any]] = None
         self.start_time: Optional[float] = None
@@ -77,14 +78,16 @@ class CrawlerTaskManager:
         post_url: str,
         max_comments: int = 50,
         scroll_delay: float = 2.0,
-        headless: bool = True
+        headless: bool = True,
+        deduplicate: bool = True
     ) -> bool:
         """Starts a background thread to crawl a single post and its comments."""
         return self.start_multi_post_crawl(
             post_urls=[post_url],
             max_comments=max_comments,
             scroll_delay=scroll_delay,
-            headless=headless
+            headless=headless,
+            deduplicate=deduplicate
         )
 
     def start_multi_post_crawl(
@@ -92,7 +95,8 @@ class CrawlerTaskManager:
         post_urls: List[str],
         max_comments: int = 50,
         scroll_delay: float = 2.0,
-        headless: bool = True
+        headless: bool = True,
+        deduplicate: bool = True
     ) -> bool:
         """Starts a background thread to crawl multiple posts sequentially."""
         with self._lock:
@@ -117,6 +121,7 @@ class CrawlerTaskManager:
             self.root_count = 0
             self.child_count = 0
             self.toxic_count = 0
+            self.skipped_duplicates_count = 0
             self.status_message = f"Chuẩn bị cào {self.total_links} bài viết Threads..."
             self.latest_item = None
             self.start_time = time.time()
@@ -128,12 +133,12 @@ class CrawlerTaskManager:
 
             self._worker_thread = threading.Thread(
                 target=self._run_multi_post_worker,
-                args=(clean_urls, max_comments, scroll_delay, headless),
+                args=(clean_urls, max_comments, scroll_delay, headless, deduplicate),
                 daemon=True,
                 name="ThreadsCrawler-MultiPostWorker"
             )
             self._worker_thread.start()
-            logger.info(f"Background multi-post crawl thread started for {len(clean_urls)} URLs.")
+            logger.info(f"Background multi-post crawl thread started for {len(clean_urls)} URLs (Deduplicate: {deduplicate}).")
             return True
 
     def start_search_crawl(
@@ -141,7 +146,8 @@ class CrawlerTaskManager:
         query: str,
         limit: int = 30,
         scroll_delay: float = 2.0,
-        headless: bool = True
+        headless: bool = True,
+        deduplicate: bool = True
     ) -> bool:
         """Starts a background thread to crawl search results."""
         with self._lock:
@@ -158,6 +164,7 @@ class CrawlerTaskManager:
             self.root_count = 0
             self.child_count = 0
             self.toxic_count = 0
+            self.skipped_duplicates_count = 0
             self.status_message = f"Bắt đầu tìm kiếm Threads: '{query}'..."
             self.latest_item = None
             self.start_time = time.time()
@@ -168,12 +175,12 @@ class CrawlerTaskManager:
 
             self._worker_thread = threading.Thread(
                 target=self._run_search_worker,
-                args=(query, limit, scroll_delay, headless),
+                args=(query, limit, scroll_delay, headless, deduplicate),
                 daemon=True,
                 name="ThreadsCrawler-SearchWorker"
             )
             self._worker_thread.start()
-            logger.info(f"Background search thread started for: '{query}'")
+            logger.info(f"Background search thread started for: '{query}' (Deduplicate: {deduplicate})")
             return True
 
     def stop_crawl(self) -> bool:
@@ -207,12 +214,14 @@ class CrawlerTaskManager:
         post_urls: List[str],
         max_comments: int,
         scroll_delay: float,
-        headless: bool
+        headless: bool,
+        deduplicate: bool = True
     ):
         base_scraped = 0
         base_root = 0
         base_child = 0
         base_toxic = 0
+        base_skipped = 0
         total_urls = len(post_urls)
         crawler = None
 
@@ -253,7 +262,8 @@ class CrawlerTaskManager:
                         max_comments=max_comments,
                         scroll_delay=scroll_delay,
                         progress_callback=current_cb,
-                        stop_check=self._stop_check
+                        stop_check=self._stop_check,
+                        deduplicate=deduplicate
                     )
                 except Exception as post_err:
                     logger.error(f"Error crawling link {post_url}: {post_err}", exc_info=True)
@@ -263,6 +273,7 @@ class CrawlerTaskManager:
                         "root_comments_count": 0,
                         "child_comments_count": 0,
                         "toxic_comments_count": 0,
+                        "skipped_duplicates_count": 0,
                         "status": "error",
                         "error": str(post_err)
                     }
@@ -271,17 +282,20 @@ class CrawlerTaskManager:
                 root_in_this_post = res.get("root_comments_count", 0)
                 child_in_this_post = res.get("child_comments_count", 0)
                 toxic_in_this_post = res.get("toxic_comments_count", 0)
+                skipped_in_this_post = res.get("skipped_duplicates_count", 0)
 
                 base_scraped += comments_in_this_post
                 base_root += root_in_this_post
                 base_child += child_in_this_post
                 base_toxic += toxic_in_this_post
+                base_skipped += skipped_in_this_post
 
                 with self._lock:
                     self.scraped_count = base_scraped
                     self.root_count = base_root
                     self.child_count = base_child
                     self.toxic_count = base_toxic
+                    self.skipped_duplicates_count = base_skipped
                     if res.get("login_wall_hit"):
                         self.login_wall_hit = True
                     self.link_results.append(res)
@@ -297,15 +311,17 @@ class CrawlerTaskManager:
                     "root_comments_count": self.root_count,
                     "child_comments_count": self.child_count,
                     "toxic_comments_count": self.toxic_count,
+                    "skipped_duplicates_count": self.skipped_duplicates_count,
                     "login_wall_hit": self.login_wall_hit,
                     "link_results": self.link_results,
                     "status": "stopped" if self._stop_event.is_set() else "success"
                 }
+                dedup_info = f" (Bỏ qua {self.skipped_duplicates_count} trùng)" if self.skipped_duplicates_count > 0 else ""
                 if self._stop_event.is_set():
-                    self.status_message = f"Đã dừng theo yêu cầu! Đã duyệt {len(self.link_results)}/{total_urls} bài viết, thu thập {self.scraped_count} bình luận ({self.toxic_count} độc hại)."
+                    self.status_message = f"Đã dừng theo yêu cầu! Đã duyệt {len(self.link_results)}/{total_urls} bài viết, thu thập {self.scraped_count} bình luận ({self.toxic_count} độc hại){dedup_info}."
                 else:
                     prefix = f"Hoàn tất cào {total_urls} bài viết!" if total_urls > 1 else "Hoàn tất cào!"
-                    self.status_message = f"{prefix} Thu thập {self.scraped_count} bình luận ({self.toxic_count} độc hại)."
+                    self.status_message = f"{prefix} Thu thập {self.scraped_count} bình luận ({self.toxic_count} độc hại){dedup_info}."
         except Exception as e:
             logger.error(f"Error in background multi-post crawl worker: {e}", exc_info=True)
             with self._lock:
@@ -316,10 +332,10 @@ class CrawlerTaskManager:
                 self.is_running = False
                 self.end_time = time.time()
 
-    def _run_post_worker(self, post_url: str, max_comments: int, scroll_delay: float, headless: bool):
-        self._run_multi_post_worker([post_url], max_comments, scroll_delay, headless)
+    def _run_post_worker(self, post_url: str, max_comments: int, scroll_delay: float, headless: bool, deduplicate: bool = True):
+        self._run_multi_post_worker([post_url], max_comments, scroll_delay, headless, deduplicate)
 
-    def _run_search_worker(self, query: str, limit: int, scroll_delay: float, headless: bool):
+    def _run_search_worker(self, query: str, limit: int, scroll_delay: float, headless: bool, deduplicate: bool = True):
         try:
             crawler = ThreadsCrawler(headless=headless)
             res = crawler.crawl_search_query(
@@ -327,16 +343,19 @@ class CrawlerTaskManager:
                 limit=limit,
                 scroll_delay=scroll_delay,
                 progress_callback=self._progress_callback,
-                stop_check=self._stop_check
+                stop_check=self._stop_check,
+                deduplicate=deduplicate
             )
             with self._lock:
                 self.result = res
                 self.scraped_count = res.get("posts_count", self.scraped_count)
                 self.toxic_count = res.get("toxic_posts_count", self.toxic_count)
+                self.skipped_duplicates_count = res.get("skipped_duplicates_count", 0)
+                dedup_info = f" (Bỏ qua {self.skipped_duplicates_count} trùng)" if self.skipped_duplicates_count > 0 else ""
                 if self._stop_event.is_set():
-                    self.status_message = f"Đã dừng theo yêu cầu! Thu thập được {self.scraped_count} bài đăng ({self.toxic_count} vi phạm)."
+                    self.status_message = f"Đã dừng theo yêu cầu! Thu thập được {self.scraped_count} bài đăng ({self.toxic_count} vi phạm){dedup_info}."
                 else:
-                    self.status_message = f"Hoàn tất tìm kiếm! Thu thập {self.scraped_count} bài đăng ({self.toxic_count} vi phạm)."
+                    self.status_message = f"Hoàn tất tìm kiếm! Thu thập {self.scraped_count} bài đăng ({self.toxic_count} vi phạm){dedup_info}."
         except Exception as e:
             logger.error(f"Error in background search worker: {e}", exc_info=True)
             with self._lock:
@@ -368,6 +387,7 @@ class CrawlerTaskManager:
                 "root_count": self.root_count,
                 "child_count": self.child_count,
                 "toxic_count": self.toxic_count,
+                "skipped_duplicates_count": self.skipped_duplicates_count,
                 "status_message": self.status_message,
                 "latest_item": self.latest_item,
                 "elapsed_seconds": elapsed,
@@ -389,6 +409,7 @@ class CrawlerTaskManager:
                 self.total_links = 0
                 self.current_link_idx = 0
                 self.link_results = []
+                self.skipped_duplicates_count = 0
                 self.status_message = "Sẵn sàng"
                 self.latest_item = None
                 self.result = None

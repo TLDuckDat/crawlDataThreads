@@ -1244,5 +1244,41 @@
     "post_context": "bị con em ruột chửi là cái đồ không có học thức thì nên đáp trả như nào vậy ạ?",
     "topic": "",
     "reviewed_at": "2026-09-21T03:35:37.883722"
+  },
+  {
+    "text": "M bị ngu à,dân đen giờ sống còn dư tiền để t7-cn đi uốn cafe chứ làm như đi ăn viện trợ vô gia cư á thk ngu",
+    "label": "ambiguous",
+    "new_keywords": [
+      "ngu",
+      "du",
+      "dan"
+    ],
+    "post_context": "Fact : Dân đen lao động ko đủ sống , Sinh viên chật vật đóng tiền học Nhưng đa số quan chức toàn lái xe hơi, còn con cái thì định cư Mỹ, Anh , úc, ....",
+    "topic": "Chửi thề / Tục tĩu, Lăng mạ / Xúc phạm nhân phẩm, Từ lóng / Teencode nhạy cảm",
+    "reviewed_at": "2026-09-23T21:54:51.680082"
+  },
+  {
+    "text": "Chống + mà ngu cỡ này thì yên tâm ngủ sớm thôi 🤣",
+    "label": "ambiguous",
+    "new_keywords": [
+      "ngu"
+    ],
+    "post_context": "Fact : Dân đen lao động ko đủ sống , Sinh viên chật vật đóng tiền học Nhưng đa số quan chức toàn lái xe hơi, còn con cái thì định cư Mỹ, Anh , úc, ....",
+    "topic": "Chửi thề / Tục tĩu, Lăng mạ / Xúc phạm nhân phẩm, Từ lóng / Teencode nhạy cảm",
+    "reviewed_at": "2026-09-23T21:54:52.955293"
+  },
+  {
+    "text": "Dân đen lao động kg đủ sống là do mày ngu, mày đéo có năng lực thì mày nghèo thôi",
+    "label": "ambiguous",
+    "new_keywords": [
+      "du",
+      "dan",
+      "đéo",
+      "ngu",
+      "deo"
+    ],
+    "post_context": "Fact : Dân đen lao động ko đủ sống , Sinh viên chật vật đóng tiền học Nhưng đa số quan chức toàn lái xe hơi, còn con cái thì định cư Mỹ, Anh , úc, ....",
+    "topic": "Chửi thề / Tục tĩu, Lăng mạ / Xúc phạm nhân phẩm, Từ lóng / Teencode nhạy cảm",
+    "reviewed_at": "2026-09-23T21:54:55.210918"
   }
 ]

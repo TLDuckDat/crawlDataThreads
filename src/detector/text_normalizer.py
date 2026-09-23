@@ -107,15 +107,36 @@ def contains_foreign_script(text: str) -> bool:
         return False
     return bool(FOREIGN_SCRIPTS_PATTERN.search(text))
 
+def clean_ui_artifacts(text: str) -> str:
+    """
+    Remove Threads UI artifacts from extracted text:
+    - 'Translate 1 / 2', 'Translate 1 / 3', 'Xem bản dịch 1 / 2', 'Dịch 1 / 2'
+    - Trailing carousel counters like '1 / 2', '2 / 2', '1 / 3'
+    - Trailing UI buttons 'Translate', 'Xem bản dịch', 'Dịch'
+    """
+    if not text:
+        return ""
+    s = str(text).strip()
+    # Strip Translate / Xem bản dịch / Dịch + carousel page numbers anywhere or at the end
+    s = re.sub(r'\s*\b(?:Translate|Xem bản dịch|Dịch)\s+\d+\s*/\s*\d+\b', '', s, flags=re.IGNORECASE)
+    # Strip trailing Translate, Xem bản dịch, Dịch at end of string
+    s = re.sub(r'\s*\b(?:Translate|Xem bản dịch|Dịch)\s*$', '', s, flags=re.IGNORECASE)
+    # Strip trailing carousel counter at end of string (e.g. '... text 1 / 2')
+    s = re.sub(r'\s*\b\d+\s*/\s*\d+\s*$', '', s)
+    return " ".join(s.split())
+
 def clean_to_viet_eng(text: str) -> str:
     """
     Strips out foreign characters (Chinese, Japanese, Korean, Thai, etc.)
+    and UI artifacts (Translate 1 / 2, carousel page counters...),
     leaving only Vietnamese and English letters, numbers, punctuation, and emojis.
     Collapses all redundant spaces, newlines, and tabs.
     """
     if not text:
         return ""
-    cleaned = FOREIGN_SCRIPTS_PATTERN.sub('', text)
+    # Strip UI artifacts first
+    cleaned = clean_ui_artifacts(text)
+    cleaned = FOREIGN_SCRIPTS_PATTERN.sub('', cleaned)
     # Collapse multiple whitespace (spaces, tabs, newlines) into single space
     cleaned = " ".join(cleaned.split())
     return cleaned

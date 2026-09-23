@@ -197,6 +197,72 @@ class TestCommentCleanup(unittest.TestCase):
         self.assertIsNotNone(new_first)
         self.assertNotEqual(new_first["id"], del_id)
 
+    def test_count_comments_by_length_operators(self):
+        """Test count_comments_by_length with various operators (<=, >=, <, >, ==)."""
+        # Comments lengths: 43, 1, 51, 34
+        # <= 1: c_short_1 (len 1) -> 1
+        self.assertEqual(self.db.count_comments_by_length("<=", 1), 1)
+        # <= 2: c_short_1 (len 1) -> 1
+        self.assertEqual(self.db.count_comments_by_length("<=", 2), 1)
+        # < 2: c_short_1 (len 1) -> 1
+        self.assertEqual(self.db.count_comments_by_length("<", 2), 1)
+        # >= 40: c_normal_1 (43), c_spam_kw_1 (51) -> 2
+        self.assertEqual(self.db.count_comments_by_length(">=", 40), 2)
+        # > 50: c_spam_kw_1 (51) -> 1
+        self.assertEqual(self.db.count_comments_by_length(">", 50), 1)
+        # == 1: c_short_1 (1) -> 1
+        self.assertEqual(self.db.count_comments_by_length("==", 1), 1)
+        # == 100: none -> 0
+        self.assertEqual(self.db.count_comments_by_length("==", 100), 0)
+
+    def test_delete_comments_by_length_with_protection(self):
+        """Test deleting comments by length with protect_reviewed option."""
+        # Insert a reviewed short comment
+        self.db.upsert_comment(CommentModel(
+            id="c_short_reviewed",
+            post_id="post_clean_1",
+            post_url="https://www.threads.net/@user/post/clean1",
+            author_username="user_reviewer",
+            content="ok",
+            is_user_reviewed=True,
+            user_review="clean"
+        ))
+        self.db.update_user_review("c_short_reviewed", user_review="clean")
+
+        # We now have: c_short_1 (len 1, unreviewed) and c_short_reviewed (len 2, reviewed)
+        # With keep_reviewed=True (default), deleting <= 2 should only delete c_short_1
+        deleted_protected = self.db.delete_comments_by_length("<=", 2, keep_reviewed=True)
+        self.assertEqual(deleted_protected, 1)
+
+        # Verify c_short_reviewed still exists
+        item = self.db.get_cleanup_comment_at_index(index=0, search_kw="ok")
+        self.assertIsNotNone(item)
+        self.assertEqual(item["id"], "c_short_reviewed")
+
+        # Now delete <= 2 with keep_reviewed=False -> should delete c_short_reviewed
+        deleted_unprotected = self.db.delete_comments_by_length("<=", 2, keep_reviewed=False)
+        self.assertEqual(deleted_unprotected, 1)
+
+    def test_get_comments_by_length_preview(self):
+        """Test previewing comments matching length criteria."""
+        preview = self.db.get_comments_by_length_preview(">=", 40, limit=5)
+        self.assertEqual(len(preview), 2)
+        self.assertTrue(all(item["content_length"] >= 40 for item in preview))
+
+    def test_cleanup_filter_by_range_and_op(self):
+        """Test filtering cleanup comments by range (min_length, max_length) and length_op."""
+        # Range 30 to 45: c_normal_1 (43), c_spammer_2 (34)
+        df_range = self.db.get_comments_for_cleanup_df(min_length=30, max_length=45)
+        self.assertEqual(len(df_range), 2)
+
+        # Operator >= 50: c_spam_kw_1 (51)
+        df_op = self.db.get_comments_for_cleanup_df(length_op=">=", length_val=50)
+        self.assertEqual(len(df_op), 1)
+        self.assertEqual(df_op.iloc[0]["id"], "c_spam_kw_1")
+
+        cnt_op = self.db.count_cleanup_comments(length_op="<=", length_val=2)
+        self.assertEqual(cnt_op, 1)
+
 if __name__ == "__main__":
     unittest.main()
 
